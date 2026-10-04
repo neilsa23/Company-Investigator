@@ -1,6 +1,6 @@
 
 """
-Company Investigator — Version 1.11
+Company Investigator — Version 1.12
 A local Python company-analysis engine.
 
 Usage:
@@ -20,7 +20,7 @@ import os
 import statistics
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
 
@@ -111,13 +111,82 @@ def fetch_json(url):
         return json.loads(r.read().decode("utf-8"))
 
 
+class AlphaVantageError(RuntimeError):
+    """Clear, user-facing Alpha Vantage API failure."""
+
+
+def normalise_input_symbol(symbol):
+    """Normalise common Trading 212/LSE ticker formats for Alpha Vantage.
+
+    Alpha Vantage's documented London suffix is .LON. Users commonly enter
+    .L in UK brokerage apps, so we accept both and send .LON to the API.
+    """
+    raw = str(symbol or "").strip().upper()
+    if raw.endswith(".L"):
+        return raw[:-2] + ".LON"
+    return raw
+
+
+def _api_error_message(data):
+    if not isinstance(data, dict):
+        return None
+    for key in ("Error Message", "Information", "Note"):
+        value = data.get(key)
+        if value:
+            return str(value)
+    return None
+
+
 def alpha_vantage(symbol, function, api_key):
+    symbol = normalise_input_symbol(symbol)
     q = urllib.parse.urlencode({
         "function": function,
         "symbol": symbol,
         "apikey": api_key,
     })
-    return fetch_json("https://www.alphavantage.co/query?" + q)
+    url = "https://www.alphavantage.co/query?" + q
+    try:
+        data = fetch_json(url)
+    except Exception as exc:
+        raise AlphaVantageError(f"Alpha Vantage request failed for {function}: {exc}") from exc
+    message = _api_error_message(data)
+    if message:
+        raise AlphaVantageError(f"Alpha Vantage {function} for {symbol}: {message}")
+    return data
+
+
+def symbol_search(keywords, api_key):
+    """Find the best Alpha Vantage symbol for a bare ticker/company name."""
+    q = urllib.parse.urlencode({
+        "function": "SYMBOL_SEARCH",
+        "keywords": str(keywords or "").strip().upper(),
+        "apikey": api_key,
+    })
+    try:
+        data = fetch_json("https://www.alphavantage.co/query?" + q)
+    except Exception as exc:
+        raise AlphaVantageError(f"Symbol search failed: {exc}") from exc
+    message = _api_error_message(data)
+    if message:
+        raise AlphaVantageError(f"Alpha Vantage symbol search: {message}")
+    matches = data.get("bestMatches", []) if isinstance(data, dict) else []
+    if not matches:
+        return None
+    # Prefer an exact symbol match, then London Stock Exchange, then the
+    # highest match score.
+    wanted = str(keywords or "").strip().upper()
+    def rank(item):
+        sym = str(item.get("1. symbol", "")).upper()
+        region = str(item.get("4. region", "")).lower()
+        exact = 1 if sym == wanted else 0
+        london = 1 if ("london" in region or sym.endswith(".LON")) else 0
+        try:
+            score = float(item.get("9. matchScore", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0
+        return (exact, london, score)
+    best = max(matches, key=rank)
+    return str(best.get("1. symbol") or "").upper() or None
 
 
 
@@ -881,6 +950,7 @@ class CompanyReport:
     opportunity_score: float = 0.0
     risk_score: float = 0.0
     risk_band: str = "MEDIUM"
+    data_status: Dict[str, Any] = field(default_factory=dict)
 
 
 def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyReport:
@@ -892,7 +962,7 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
     company = overview.get("Name", "Unknown")
     sector = overview.get("Sector", "Unknown")
     industry = overview.get("Industry", "Unknown")
-    symbol = overview.get("Symbol", "Unknown")
+    symbol = overview.get("Symbol") or data.get("symbol_used") or data.get("symbol_requested") or "Unknown"
     company_type = classify_company(sector, industry, overview)
 
     financial_currency = normalise_currency(
@@ -907,7 +977,8 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
         description = str(overview.get("Description", "")).lower()
         financial_currency = "USD" if "raspberry pi" in description else None
 
-    quote_currency = "GBP" if symbol.endswith(".L") else financial_currency
+    is_london = str(symbol).upper().endswith((".L", ".LON"))
+    quote_currency = "GBP" if is_london else financial_currency
 
     revenue = safe_num(overview.get("RevenueTTM"))
     eps = safe_num(overview.get("EPS"))
@@ -923,7 +994,8 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
     raw_share_price = safe_num(overview.get("Price"))
     share_price = raw_share_price
     price_currency = quote_currency
-    if symbol.endswith(".L") and raw_share_price is not None:
+    if is_london and raw_share_price is not None:
+        # Alpha Vantage's London quote is commonly returned in pence.
         share_price = gbp_price_from_gbx(raw_share_price)
 
     total_assets = safe_num(balance.get("totalAssets"))
@@ -1002,9 +1074,6 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
     active_weights = company_type_weights(company_type)
     overall = sum(raw_scores[k] * active_weights[k] for k in active_weights)
 
-    # Metrics are assembled below before the red-flag engine is called.
-    # (Keep the scoring inputs above independent from the final metrics dict.)
-
     if overall >= 85:
         verdict = "EXCEPTIONAL"
     elif overall >= 75:
@@ -1043,13 +1112,13 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
         "Company type": company_type,
     }
 
-    # Let the dedicated red-flag engine challenge the thesis now that the
+    # Let the dedicated red-flag engine challenge the thesis only after the
     # complete metrics dictionary exists.
     flags, positives = red_flag_engine(
         overview, income, balance, cash, metrics
     )
 
-    # V1.11: normalise valuation inputs before any fair-value calculation.
+    # V1.12: normalise valuation inputs before any fair-value calculation.
     if api_key:
         metrics = normalise_financials_for_valuation(metrics, api_key)
     else:
@@ -1155,6 +1224,12 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
         opportunity_score=decision_scores["opportunity_score"],
         risk_score=decision_scores["risk_score"],
         risk_band=decision_scores["risk_band"],
+        data_status={
+            "requested_symbol": data.get("symbol_requested"),
+            "api_symbol": data.get("symbol_used") or symbol,
+            "warnings": data.get("warnings", []),
+            "errors": data.get("errors", {}),
+        },
     )
     report.position_guidance = conviction_and_position_size(report)
     return report
@@ -1584,12 +1659,48 @@ def print_report(report: CompanyReport):
 
 
 def load_company_data(symbol, api_key):
-    return {
-        "overview": alpha_vantage(symbol, "OVERVIEW", api_key),
-        "income": alpha_vantage(symbol, "INCOME_STATEMENT", api_key),
-        "balance": alpha_vantage(symbol, "BALANCE_SHEET", api_key),
-        "cash": alpha_vantage(symbol, "CASH_FLOW", api_key),
-    }
+    """Load fundamentals with symbol normalisation and explicit diagnostics.
+
+    A failed endpoint no longer gets silently turned into an all-Unknown report.
+    The overview is required for a meaningful analysis; the other statements
+    may be unavailable for some securities and are recorded individually.
+    """
+    requested = str(symbol or "").strip().upper()
+    api_symbol = normalise_input_symbol(requested)
+
+    # Bare symbols are ambiguous. Use Alpha Vantage's search endpoint to resolve
+    # them, preferring London where the search result supports it.
+    resolution_note = ""
+    if "." not in requested:
+        try:
+            resolved = symbol_search(requested, api_key)
+        except AlphaVantageError as exc:
+            resolved = None
+            resolution_note = str(exc)
+        if resolved:
+            api_symbol = normalise_input_symbol(resolved)
+            resolution_note = f"Resolved {requested} to {api_symbol}"
+        else:
+            resolution_note = resolution_note or f"No symbol-search match; tried {api_symbol}"
+
+    data = {"symbol_requested": requested, "symbol_used": api_symbol, "errors": {}, "warnings": []}
+    for key, function in (("overview", "OVERVIEW"), ("income", "INCOME_STATEMENT"),
+                          ("balance", "BALANCE_SHEET"), ("cash", "CASH_FLOW")):
+        try:
+            data[key] = alpha_vantage(api_symbol, function, api_key)
+        except AlphaVantageError as exc:
+            data[key] = {}
+            data["errors"][function] = str(exc)
+
+    if resolution_note:
+        data["warnings"].append(resolution_note)
+
+    if not data.get("overview"):
+        details = "; ".join(data["errors"].values()) or "No overview data was returned."
+        raise AlphaVantageError(
+            f"Could not retrieve company data for {requested} (sent to Alpha Vantage as {api_symbol}). {details}"
+        )
+    return data
 
 
 def main():
@@ -1622,7 +1733,7 @@ def main():
         symbol = raw_symbol.upper()
         print(f"Downloading fundamentals for {symbol}...")
         data = load_company_data(symbol, api_key)
-        report = analyse(data)
+        report = analyse(data, api_key)
         reports.append(report)
 
         # Save individual machine-readable report.
