@@ -3,6 +3,7 @@ import os
 import streamlit as st
 import pandas as pd
 from company_investigator_v1 import (
+    AlphaVantageError,
     load_company_data,
     analyse,
     investment_thesis,
@@ -18,7 +19,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool")
+st.caption("A structured pre-investment research and valuation tool • Engine v1.12")
 
 api_key = os.getenv("ALPHAVANTAGE_API_KEY")
 if not api_key:
@@ -56,22 +57,48 @@ tab1, tab2 = st.tabs(["🔎 Analyse", "⚖️ Compare"])
 with tab1:
     ticker = st.text_input(
         "Company ticker",
-        placeholder="RPI, RR.L, IBM...",
+        placeholder="RPI.L, RR.L, RPI.LON, IBM...",
         label_visibility="visible",
     )
 
     if st.button("🔍 Analyse company", type="primary", disabled=not ticker.strip()):
         with st.spinner(f"Researching {ticker.upper()}..."):
-            data = load_company_data(ticker.upper().strip(), api_key)
-            report = analyse(data, api_key)
-            thesis = investment_thesis(report)
-            st.session_state["report"] = report
-            st.session_state["thesis"] = thesis
+            try:
+                data = load_company_data(ticker.upper().strip(), api_key)
+                report = analyse(data, api_key)
+                thesis = investment_thesis(report)
+                st.session_state["report"] = report
+                st.session_state["thesis"] = thesis
+                st.session_state.pop("analysis_error", None)
+            except AlphaVantageError as exc:
+                st.session_state["analysis_error"] = str(exc)
+                st.session_state.pop("report", None)
+                st.session_state.pop("thesis", None)
+
+    if st.session_state.get("analysis_error"):
+        st.error("Company data could not be retrieved")
+        st.warning(st.session_state["analysis_error"])
+        st.info(
+            "Try the LSE format RPI.L (the app will automatically send RPI.LON to Alpha Vantage), "
+            "or check whether your Alpha Vantage key has reached its daily request limit."
+        )
 
     report = st.session_state.get("report")
     thesis = st.session_state.get("thesis")
 
     if report:
+        status = report.data_status or {}
+        if status.get("warnings"):
+            for warning in status["warnings"]:
+                st.info(warning)
+        endpoint_errors = status.get("errors") or {}
+        if endpoint_errors:
+            with st.expander("⚠️ Data-source diagnostics", expanded=False):
+                st.caption(
+                    "Some Alpha Vantage endpoints did not return data. The analysis continues using the data that was available."
+                )
+                for endpoint, message in endpoint_errors.items():
+                    st.write(f"**{endpoint}** — {message}")
         # HERO
         st.divider()
         st.subheader(f"{report.company}  •  {report.symbol}")
@@ -311,10 +338,22 @@ with tab2:
             st.error("Maximum six companies.")
         else:
             reports = []
+            failed = []
             with st.spinner("Analysing companies..."):
                 for ticker_value in tickers:
-                    data = load_company_data(ticker_value, api_key)
-                    reports.append(analyse(data, api_key))
+                    try:
+                        data = load_company_data(ticker_value, api_key)
+                        reports.append(analyse(data, api_key))
+                    except AlphaVantageError as exc:
+                        failed.append((ticker_value, str(exc)))
+
+            if failed:
+                for ticker_value, message in failed:
+                    st.warning(f"{ticker_value}: {message}")
+
+            if len(reports) < 2:
+                st.error("Fewer than two companies returned usable data, so a comparison cannot be produced.")
+                st.stop()
 
             rows = compare_reports(reports)
 
