@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v1.12")
+st.caption("A structured pre-investment research and valuation tool • Engine v1.13")
 
 api_key = os.getenv("ALPHAVANTAGE_API_KEY")
 if not api_key:
@@ -410,4 +410,4 @@ with tab2:
                 )
 
 st.divider()
-st.caption("Company Investigator • Version 1.11")
+st.caption("Company Investigator • Version 1.13")
