@@ -1,6 +1,6 @@
 
 """
-Company Investigator — Version 1.12
+Company Investigator — Version 1.13
 A local Python company-analysis engine.
 
 Usage:
@@ -18,6 +18,7 @@ import json
 import math
 import os
 import statistics
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, asdict, field
@@ -137,8 +138,23 @@ def _api_error_message(data):
     return None
 
 
+_ALPHA_VANTAGE_MIN_INTERVAL = 1.2
+_ALPHA_VANTAGE_LAST_REQUEST = 0.0
+
+
+def _respect_alpha_vantage_rate_limit():
+    """Keep free Alpha Vantage requests safely above the 1 req/sec limit."""
+    global _ALPHA_VANTAGE_LAST_REQUEST
+    now = time.monotonic()
+    wait = _ALPHA_VANTAGE_MIN_INTERVAL - (now - _ALPHA_VANTAGE_LAST_REQUEST)
+    if wait > 0:
+        time.sleep(wait)
+    _ALPHA_VANTAGE_LAST_REQUEST = time.monotonic()
+
+
 def alpha_vantage(symbol, function, api_key):
     symbol = normalise_input_symbol(symbol)
+    _respect_alpha_vantage_rate_limit()
     q = urllib.parse.urlencode({
         "function": function,
         "symbol": symbol,
@@ -206,6 +222,7 @@ def fx_rate_to_gbp(from_currency, api_key):
         "apikey": api_key,
     })
     try:
+        _respect_alpha_vantage_rate_limit()
         data = fetch_json("https://www.alphavantage.co/query?" + q)
         quote = data.get("Realtime Currency Exchange Rate", {})
         rate = safe_num(quote.get("5. Exchange Rate"))
