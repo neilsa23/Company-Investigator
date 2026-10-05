@@ -39,9 +39,24 @@ st.set_page_config(
 st.title("📊 Company Investigator")
 st.caption("A structured pre-investment research and valuation tool • Engine v4.1 • Evidence-first live research + Investment Committee dossier")
 
-api_key = os.getenv("ALPHAVANTAGE_API_KEY")
+def _get_alpha_vantage_key():
+    # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
+    # as OS environment variables. Support both deployment styles.
+    key = os.getenv("ALPHAVANTAGE_API_KEY")
+    if key:
+        return key.strip()
+    try:
+        secret = st.secrets.get("ALPHAVANTAGE_API_KEY")
+        if secret:
+            return str(secret).strip()
+    except Exception:
+        pass
+    return None
+
+
+api_key = _get_alpha_vantage_key()
 if not api_key:
-    st.info("No Alpha Vantage key is configured. V4.1 uses the primary finance data layer first; Alpha Vantage is only a fallback.")
+    st.info("No Alpha Vantage key is configured. V4.1 will use the primary finance data layer first; Alpha Vantage is available as a fallback if a Streamlit secret named ALPHAVANTAGE_API_KEY is configured.")
 
 
 def traffic(score):
