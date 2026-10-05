@@ -1,4 +1,4 @@
-streamlit
-pandas
-yfinance
-requests
+streamlit>=1.40
+pandas>=2.0
+requests>=2.31
+pypdf>=5.0

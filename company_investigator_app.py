@@ -2,7 +2,7 @@
 import os
 import streamlit as st
 import pandas as pd
-from company_investigator_v4_1 import (
+from company_investigator_v4_2 import (
     AlphaVantageError,
     load_company_data_v2,
     analyse,
@@ -37,7 +37,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v4.1 • Evidence-first live research + Investment Committee dossier")
+st.caption("A structured pre-investment research and valuation tool • Engine v4.2 • Evidence-first live research + Investment Committee dossier")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -739,4 +739,4 @@ with tab2:
                 )
 
 st.divider()
-st.caption("Company Investigator • Version 4.1 • Evidence-first live research + Investment Committee dossier")
+st.caption("Company Investigator • Version 4.2 • Evidence-first live research + Investment Committee dossier")
