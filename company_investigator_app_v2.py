@@ -22,10 +22,10 @@ st.title("📊 Company Investigator")
 st.caption("A structured pre-investment research and valuation tool • Engine v2.0 • Multi-source foundation")
 
 api_key = os.getenv("ALPHAVANTAGE_API_KEY")
-if not api_key:
-    st.warning("Set ALPHAVANTAGE_API_KEY before using the analyser.")
-    st.code("ALPHAVANTAGE_API_KEY=YOUR_KEY")
-    st.stop()
+if api_key:
+    st.caption("Primary data: yfinance/Yahoo-compatible feed • Alpha Vantage available as fallback")
+else:
+    st.info("No Alpha Vantage key is configured. V2 will use the primary yfinance data layer; Alpha Vantage is only a fallback.")
 
 
 def traffic(score):
@@ -82,8 +82,9 @@ with tab1:
         st.error("Company data could not be retrieved")
         st.warning(st.session_state["analysis_error"])
         st.info(
-            "Try the LSE format RPI.L (the app will automatically send RPI.LON to Alpha Vantage), "
-            "or check whether your Alpha Vantage key has reached its daily request limit."
+            "V2 first tries the yfinance/Yahoo-compatible data layer. "
+            "If that source is unavailable, an Alpha Vantage key is required for the fallback. "
+            "For UK shares, try formats such as RPI.L or RR.L."
         )
 
     report = st.session_state.get("report")
