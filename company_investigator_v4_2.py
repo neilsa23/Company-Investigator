@@ -3585,7 +3585,18 @@ PRIMARY_UK_SOURCES = {
     "RPI": {
         "name": "Raspberry Pi Holdings plc",
         "ir": "https://investors.raspberrypi.com/",
-        "reports": "https://investors-assets.raspberrypi.com/reports",
+        "reports": "https://investors.raspberrypi.com/reports",
+        # Raspberry Pi's IR site uses stable intermediate /reports/<id>/document
+        # endpoints which redirect to short-lived signed PDFs. Keep these official
+        # routes as a deterministic fallback so discovery does not depend on HTML
+        # parsing, JavaScript, search engines, or Yahoo/Alpha Vantage.
+        "document_routes": [
+            ("https://investors.raspberrypi.com/reports/48/document", "Interim results 2026"),
+            ("https://investors.raspberrypi.com/reports/44/document", "Annual Report 2025"),
+            ("https://investors.raspberrypi.com/reports/11/document", "Final results 2025"),
+            ("https://investors.raspberrypi.com/reports/10/document", "Interim results 2025"),
+            ("https://investors.raspberrypi.com/reports/3/document", "Interim results 2024"),
+        ],
     },
 }
 
@@ -3661,6 +3672,10 @@ def _v42_document_discovery(symbol, company):
     routes = []
     if base in PRIMARY_UK_SOURCES:
         cfg = PRIMARY_UK_SOURCES[base]
+        # Deterministic official document routes first. These are primary-company
+        # endpoints and are deliberately independent of third-party market-data APIs.
+        for u, title in cfg.get("document_routes", []):
+            docs.append({"url": u, "title": title, "kind": "DOCUMENT"})
         routes.extend([cfg["reports"], cfg["ir"]])
     else:
         routes.extend(_v42_search_web(f'"{company}" investor relations annual report results', 12))
@@ -3681,11 +3696,19 @@ def _v42_document_discovery(symbol, company):
             links = _v42_extract_links(r.text, route)
             for u in links:
                 lu = u.lower()
-                if not any(k in lu for k in ("annual", "interim", "results", "report", "presentation", "financial")):
-                    continue
-                if ".pdf" in lu or "download" in lu:
+                # Investor-relations platforms often expose the actual document
+                # through an intermediate endpoint such as /reports/48/document
+                # which redirects to a signed PDF. The endpoint itself may contain
+                # none of the words "annual", "results" or "report", so it must be
+                # recognised BEFORE applying the keyword filter.
+                is_report_document = bool(re.search(r"/reports?/\d+/document(?:[/?#]|$)", lu))
+                is_generic_document = bool(re.search(r"/document(?:[/?#]|$)", lu))
+                if not is_report_document and not is_generic_document:
+                    if not any(k in lu for k in ("annual", "interim", "results", "report", "presentation", "financial", "download")):
+                        continue
+                if (".pdf" in lu or "download" in lu or is_report_document or is_generic_document):
                     kind = "PDF" if ".pdf" in lu else "DOCUMENT"
-                    docs.append({"url": u, "title": u.rsplit("/", 1)[-1], "kind": kind})
+                    docs.append({"url": u, "title": u.rsplit("/", 1)[-1] or "document", "kind": kind})
         except Exception:
             continue
 

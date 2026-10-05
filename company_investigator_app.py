@@ -21,6 +21,7 @@ from company_investigator_v4_2 import (
     build_investigation_snapshot,
     what_changed_since_last_investigation,
     build_management_research,
+    build_competitive_industry_intelligence,
     capital_allocation_red_flags,
     build_scenario_catalyst_engine,
     build_investment_committee_decision,
@@ -144,8 +145,7 @@ with tab1:
         st.error("Company data could not be retrieved")
         st.warning(st.session_state["analysis_error"])
         st.info(
-            "Try the LSE format RPI.L (the app will automatically send RPI.LON to Alpha Vantage), "
-            "or check whether your Alpha Vantage key has reached its daily request limit."
+            "V4.2 uses primary company documents for UK/LSE companies. If this error persists, the issuer's investor-relations document route needs to be added or repaired; Yahoo Finance and Alpha Vantage are not required for the UK primary-source path."
         )
 
     report = st.session_state.get("report")
