@@ -2,7 +2,7 @@
 import os
 import streamlit as st
 import pandas as pd
-from company_investigator_v4_2 import (
+from company_investigator_v5 import (
     AlphaVantageError,
     load_company_data_v2,
     analyse,
@@ -29,6 +29,8 @@ from company_investigator_v4_2 import (
     build_live_research_pack,
     live_research_summary,
     v41_live_research_pack,
+    v5_financial_summary,
+    v5_evidence_completeness,
 )
 
 st.set_page_config(
@@ -38,7 +40,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v4.2 • Evidence-first live research + Investment Committee dossier")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.0 • Financial & Evidence Engine + Investment Committee dossier")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -57,7 +59,7 @@ def _get_alpha_vantage_key():
 
 api_key = _get_alpha_vantage_key()
 if not api_key:
-    st.info("No Alpha Vantage key is configured. V4.1 will use the primary finance data layer first; Alpha Vantage is available as a fallback if a Streamlit secret named ALPHAVANTAGE_API_KEY is configured.")
+    st.info("No Alpha Vantage key is configured. V5 uses primary company documents for UK/LSE financial statements. Alpha Vantage is only an optional secondary fallback for US issuers.")
 
 
 def traffic(score):
@@ -102,6 +104,7 @@ with tab1:
                 report.data_status["source_records"] = data.get("source_records", [])
                 report.data_status["sec_enrichment"] = data.get("sec_enrichment", {})
                 thesis = investment_thesis(report)
+                st.session_state["raw_data"] = data
                 st.session_state["report"] = report
                 st.session_state["thesis"] = thesis
                 primary_pack = build_primary_source_research(report, data)
@@ -145,7 +148,7 @@ with tab1:
         st.error("Company data could not be retrieved")
         st.warning(st.session_state["analysis_error"])
         st.info(
-            "V4.2 uses primary company documents for UK/LSE companies. If this error persists, the issuer's investor-relations document route needs to be added or repaired; Yahoo Finance and Alpha Vantage are not required for the UK primary-source path."
+            "V5 uses primary company documents for UK/LSE companies. If this error persists, the issuer's investor-relations document route needs to be added or repaired; Yahoo Finance and Alpha Vantage are not required for the UK primary-source path."
         )
 
     report = st.session_state.get("report")
@@ -178,6 +181,25 @@ with tab1:
             st.info(f"**{qv["verdict"]}** — use Full Investigation for primary-source, legal/IP, management, competitive and dated-event research.")
             st.caption("Quick View is designed to take roughly 1–2 minutes to read. Missing research is explicitly labelled rather than assumed negative.")
             st.stop()
+
+        # V5 primary financial dataset and evidence ledger
+        st.markdown("## 📊 V5 Primary Financial Dataset")
+        raw_data = st.session_state.get("raw_data", {})
+        v5_rows = v5_financial_summary(raw_data) if isinstance(raw_data, dict) else []
+        if v5_rows:
+            st.dataframe(pd.DataFrame(v5_rows), use_container_width=True, hide_index=True)
+            fc1, fc2, fc3 = st.columns(3)
+            fc1.metric("Years extracted", str(len(v5_rows)))
+            fc2.metric("Evidence completeness", f"{v5_evidence_completeness(raw_data):.0f}/100")
+            fc3.metric("Primary docs processed", str((raw_data.get("financial_extraction") or {}).get("documents_processed", 0)))
+            with st.expander("🔎 Financial evidence ledger", expanded=False):
+                ledger = raw_data.get("evidence_ledger") or []
+                if ledger:
+                    st.dataframe(pd.DataFrame(ledger), use_container_width=True, hide_index=True)
+                else:
+                    st.warning("No page-level financial evidence was extracted.")
+        else:
+            st.warning("Primary documents were found, but V5 could not extract a financial statement dataset. Missing fields are not treated as zero.")
 
         status = report.data_status or {}
         if status.get("warnings"):
@@ -739,4 +761,4 @@ with tab2:
                 )
 
 st.divider()
-st.caption("Company Investigator • Version 4.2 • Evidence-first live research + Investment Committee dossier")
+st.caption("Company Investigator • Version 5.0 • Financial & Evidence Engine + Investment Committee dossier")
