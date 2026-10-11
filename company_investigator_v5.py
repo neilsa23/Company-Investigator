@@ -3634,11 +3634,11 @@ PRIMARY_UK_SOURCES = {
         # parsing, JavaScript, search engines, or Yahoo/Alpha Vantage.
         "document_routes": [
             {"url": "https://investors-assets.raspberrypi.com/reports/48/document", "title": "Interim results 2026", "fallback_url": "https://www.lse.co.uk/rns/RPI/interim-results-e9exgc54mbhey5h.html?mobile_view=desktop", "fallback_urls": ["https://www.lse.co.uk/rns/RPI/interim-results-e9exgc54mbhey5h.html?mobile_view=desktop", "https://www.lse.co.uk/rns/RPI/interim-results-e9exgc54mbhey5h.html", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "Interim results 2026 RNS announcement (HTML fallback)"},
-            {"url": "https://investors-assets.raspberrypi.com/reports/44/document", "title": "Annual Report 2025", "fallback_url": "https://www.lse.co.uk/rns/RPI/fy-2025-results-n2lz4nht5hqu0cg.html?mobile_view=desktop", "fallback_urls": ["https://www.lse.co.uk/rns/RPI/fy-2025-results-n2lz4nht5hqu0cg.html?mobile_view=desktop", "https://www.lse.co.uk/rns/fy-2025-results-n2lz4nht5hqu0cg.html", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "FY2025 results RNS announcement (HTML fallback; not the full annual report)"},
+            {"url": "https://investors-assets.raspberrypi.com/reports/44/document", "title": "Annual Report 2025", "fallback_pdf_urls": ["https://find-and-update.company-information.service.gov.uk/company/15557387/filing-history/MzUxODE2NDM4OGFkaXF6a2N4/document?download=0&format=pdf"], "fallback_url": "https://data.fca.org.uk/artefacts/NSM/RNS/3858dbc0-0036-4b1f-b896-163f7c136412.html", "fallback_urls": ["https://data.fca.org.uk/artefacts/NSM/RNS/3858dbc0-0036-4b1f-b896-163f7c136412.html", "https://www.lse.co.uk/rns/RPI/fy-2025-results-n2lz4nht5hqu0cg.html?mobile_view=desktop", "https://www.lse.co.uk/rns/fy-2025-results-n2lz4nht5hqu0cg.html", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "FY2025 results RNS announcement (HTML fallback; not the full annual report)"},
             {"url": "https://investors-assets.raspberrypi.com/reports/11/document", "title": "Final results 2025", "fallback_url": "https://www.lse.co.uk/rns/RPI/fy-2025-results-n2lz4nht5hqu0cg.html?mobile_view=desktop", "fallback_urls": ["https://www.lse.co.uk/rns/RPI/fy-2025-results-n2lz4nht5hqu0cg.html?mobile_view=desktop", "https://www.lse.co.uk/rns/fy-2025-results-n2lz4nht5hqu0cg.html", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "FY2025 results RNS announcement (HTML fallback)"},
             {"url": "https://investors-assets.raspberrypi.com/reports/10/document", "title": "Interim results 2025", "fallback_url": "https://data.fca.org.uk/artefacts/NSM/RNS/5830813.html", "fallback_urls": ["https://data.fca.org.uk/artefacts/NSM/RNS/5830813.html", "https://www.lse.co.uk/rns/RPI/interim-results-2025.html?mobile_view=desktop"], "fallback_title": "Interim results 2025 RNS announcement (HTML fallback)"},
             {"url": "https://investors-assets.raspberrypi.com/reports/3/document", "title": "Interim results 2024", "fallback_url": "https://www.lse.co.uk/rns/interim-results-m3y18z42fcjs1an.html?mobile_view=desktop", "fallback_urls": ["https://www.lse.co.uk/rns/interim-results-m3y18z42fcjs1an.html?mobile_view=desktop", "https://www.lse.co.uk/rns/interim-results-m3y18z42fcjs1an.html", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "Interim results 2024 RNS announcement (HTML fallback)"},
-            {"url": "https://investors-assets.raspberrypi.com/reports/7/document", "title": "Annual Report 2024", "fallback_url": "https://www.lse.co.uk/rns/RPI/fy-2024-final-results-0jh8ophsnc25o5h.html?mobile_view=desktop", "fallback_urls": ["https://www.lse.co.uk/rns/RPI/fy-2024-final-results-0jh8ophsnc25o5h.html?mobile_view=desktop", "https://data.fca.org.uk/artefacts/NSM/RNS/5599873.html", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "FY2024 final results RNS announcement (HTML fallback; not the full annual report)"},
+            {"url": "https://investors-assets.raspberrypi.com/reports/7/document", "title": "Annual Report 2024", "fallback_pdf_urls": ["https://find-and-update.company-information.service.gov.uk/company/15557387/filing-history/MzQ3MjcyOTQ3N2FkaXF6a2N4/document?download=0&format=pdf"], "fallback_url": "https://data.fca.org.uk/artefacts/NSM/RNS/5599873.html", "fallback_urls": ["https://data.fca.org.uk/artefacts/NSM/RNS/5599873.html", "https://www.lse.co.uk/rns/RPI/fy-2024-final-results-0jh8ophsnc25o5h.html?mobile_view=desktop", "https://investors-assets.raspberrypi.com/reports"], "fallback_title": "FY2024 final results RNS announcement (HTML fallback; not the full annual report)"},
             {"url": "https://investors.raspberrypi.com/ipo/documents/3", "title": "Historical Financial Information FY2021-FY2023"},
         ],
     },
@@ -3753,6 +3753,7 @@ def _v42_document_discovery(symbol, company):
                 docs.append({"url": route["url"], "title": route["title"], "kind": "DOCUMENT",
                              "fallback_url": route.get("fallback_url"),
                              "fallback_urls": route.get("fallback_urls", []),
+                             "fallback_pdf_urls": route.get("fallback_pdf_urls", []),
                              "fallback_title": route.get("fallback_title")})
             else:
                 u, title = route
@@ -4342,6 +4343,34 @@ def _v5_doc_priority(title):
     return 30
 
 
+def _v5_fetch_pdf_fallback(document):
+    """Try stable official filing-document URLs when the issuer's PDF CDN is blocked.
+
+    Only a real PDF with substantial extractable text and financial-statement cues is
+    accepted. The response URL is retained as evidence; short-lived signed URLs are
+    never hard-coded. Returns (response, url) or raises the last retrieval/validation error.
+    """
+    urls = list(document.get("fallback_pdf_urls") or [])
+    last_error = None
+    for url in urls:
+        try:
+            response = _v42_get(url, timeout=(5, 30), headers={"Accept": "application/pdf,*/*;q=0.8"})
+            content = getattr(response, "content", b"") or b""
+            ctype = (getattr(response, "headers", {}) or {}).get("content-type", "").lower()
+            if not (content.startswith(b"%PDF") or "application/pdf" in ctype):
+                raise requests.RequestException(f"Fallback did not return a PDF: {url}")
+            text = _v42_pdf_text(content)
+            lowered = text.lower()
+            if len(text.strip()) < 2000 or not any(token in lowered for token in ("revenue", "profit for the year", "cash flows", "financial statements", "total assets")):
+                raise requests.RequestException(f"Fallback PDF lacked substantial financial-statement text: {url}")
+            return response, url
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise requests.RequestException("No official PDF fallback URLs configured")
+
+
 def _v5_fetch_html_fallback(document):
     """Try documented public HTML alternatives without overstating coverage.
 
@@ -4384,18 +4413,25 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
             try:
                 r=_v42_get(d["url"],timeout=(4, 16))
             except Exception as primary_exc:
-                # If the report CDN blocks the app, try several public HTML
-                # announcement routes. HTML fallback retrieval is counted separately
-                # from full primary documents; it does not inflate that metric.
+                # First try a stable official filing-document endpoint (e.g. Companies
+                # House accounts PDF). Only if that fails, use a partial HTML results
+                # announcement; never count an announcement as a full annual report.
+                pdf_fallback_error = None
                 try:
-                    fr, fallback_text, fallback_url = _v5_fetch_html_fallback(d)
-                except Exception as fallback_exc:
-                    raise requests.RequestException(f"Primary document failed ({primary_exc}); all HTML fallbacks failed ({fallback_exc})")
-                fallback_title = d.get("fallback_title") or (d.get("title", "Primary report") + " (HTML fallback)")
-                source_records.append(SourceRecord("Regulatory announcement HTML fallback", "financial-results announcement", "PARTIAL", fallback_url,
-                    f"Retrieved substantial HTML result announcement after primary document failed ({type(primary_exc).__name__}). This is not a full annual/interim report.").__dict__)
-                warnings.append(f"PDF unavailable for {d.get('title', 'primary report')}; retrieved HTML results announcement at {fallback_url}. Full-report coverage may be incomplete.")
-                continue
+                    r, pdf_fallback_url = _v5_fetch_pdf_fallback(d)
+                    source_records.append(SourceRecord("Official filing PDF fallback", "full financial report", "OK", pdf_fallback_url,
+                        f"Retrieved and validated a full PDF filing after the issuer report endpoint failed ({type(primary_exc).__name__}).").__dict__)
+                    warnings.append(f"Primary issuer document endpoint failed for {d.get('title', 'primary report')}; retrieved the full PDF from an official filing source at {pdf_fallback_url}.")
+                except Exception as pdf_fallback_exc:
+                    pdf_fallback_error = pdf_fallback_exc
+                    try:
+                        fr, fallback_text, fallback_url = _v5_fetch_html_fallback(d)
+                    except Exception as fallback_exc:
+                        raise requests.RequestException(f"Primary document failed ({primary_exc}); official PDF fallback failed ({pdf_fallback_error}); all HTML fallbacks failed ({fallback_exc})")
+                    source_records.append(SourceRecord("Regulatory announcement HTML fallback", "financial-results announcement", "PARTIAL", fallback_url,
+                        f"Retrieved substantial HTML result announcement after primary document and official PDF fallback failed. This is not a full annual/interim report.").__dict__)
+                    warnings.append(f"PDF unavailable for {d.get('title', 'primary report')}; retrieved HTML results announcement at {fallback_url}. Full-report coverage may be incomplete.")
+                    continue
             ctype=(r.headers.get("content-type") or "").lower()
             if "pdf" not in ctype and not d["url"].lower().endswith(".pdf") and not r.content.startswith(b"%PDF"):
                 try:
@@ -4407,7 +4443,10 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
                 except Exception as fallback_exc:
                     warnings.append(f"PDF and HTML fallback unavailable for {d.get('title',d['url'])}: {fallback_exc}")
                 continue
-            records,ev,warns=_v5_extract_document(r.content,d["url"],d.get("title","Primary report"))
+            extraction_url = locals().get("pdf_fallback_url", d["url"])
+            records,ev,warns=_v5_extract_document(r.content,extraction_url,d.get("title","Primary report"))
+            if "pdf_fallback_url" in locals():
+                del pdf_fallback_url
             warnings.extend(warns)
             if not records:
                 warnings.append(f"No financial table extracted from {d.get('title',d['url'])}.")
@@ -4561,7 +4600,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.13 multi-route public HTML fallback, honest document counts, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.14 official filing-PDF fallback, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
