@@ -3417,8 +3417,14 @@ def build_investment_committee_decision(report, thesis=None, primary_pack=None,
     metrics = getattr(report, 'metrics', {}) or {}
     valuation = float(metrics.get('Valuation score', getattr(report, 'valuation_score', 0)) or 0)
     current = _safe_num(metrics.get('Share price'))
+    # Keep valuation status local to this function; never reference a variable
+    # that only exists inside the separate scenario engine.
+    price_anchor_valid = current is not None and current > 0
     base = _safe_num(scenario_pack.get('scenarios', {}).get('base', {}).get('fair_value'))
     weighted = _safe_num(scenario_pack.get('probability_weighted_value'))
+    if not price_anchor_valid:
+        base = None
+        weighted = None
 
     evidence_items = []
     primary_filings = primary_pack.get('filings') or []
