@@ -3678,7 +3678,10 @@ def _v42_document_discovery(symbol, company):
         # endpoints and are deliberately independent of third-party market-data APIs.
         for u, title in cfg.get("document_routes", []):
             docs.append({"url": u, "title": title, "kind": "DOCUMENT"})
-        routes.extend([cfg["reports"], cfg["ir"]])
+        # The official document endpoints above are enough for the known issuer.
+        # Avoid extra report-page/IR-page requests on every first run.
+        if base != "RPI":
+            routes.extend([cfg["reports"], cfg["ir"]])
     else:
         routes.extend(_v42_search_web(f'"{company}" investor relations annual report results', 12))
         routes.extend(_v42_search_web(f'"{company}" "Annual Report" PDF', 12))
@@ -3690,7 +3693,7 @@ def _v42_document_discovery(symbol, company):
             continue
         seen.add(route)
         try:
-            r = _v42_get(route, timeout=25)
+            r = _v42_get(route, timeout=10)
             ctype = (r.headers.get("content-type") or "").lower()
             if "pdf" in ctype or route.lower().endswith(".pdf"):
                 docs.append({"url": route, "title": route.rsplit("/", 1)[-1], "kind": "PDF"})
@@ -3986,7 +3989,7 @@ def load_company_data_v2(symbol, api_key=None):
 # V5 replaces the fragile regex-only financial parser with a table-aware parser.
 # Primary company documents remain the source of truth; Yahoo/Alpha Vantage are
 # not required for UK/LSE financial statements.
-V5_VERSION = "5.2"
+V5_VERSION = "5.3"
 V4_VERSION = V5_VERSION
 
 
@@ -4263,10 +4266,10 @@ def _v5_doc_priority(title):
 def _v5_build_primary_financial_dataset(symbol, company, documents):
     all_years={}; all_sources={}; all_evidence=[]; warnings=[]; source_records=[]; processed=0; interim=[]
     # Prioritise annual/historical sources, while retaining interim data separately.
-    docs=sorted(documents[:10],key=lambda d:_v5_doc_priority(d.get("title")),reverse=True)
+    docs=sorted(documents[:4],key=lambda d:_v5_doc_priority(d.get("title")),reverse=True)
     for d in docs:
         try:
-            r=_v42_get(d["url"],timeout=30)
+            r=_v42_get(d["url"],timeout=12)
             ctype=(r.headers.get("content-type") or "").lower()
             if "pdf" not in ctype and not d["url"].lower().endswith(".pdf") and not r.content.startswith(b"%PDF"):
                 continue
@@ -4331,7 +4334,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.2 primary financial & evidence engine","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.3 fast primary financial & evidence engine","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
@@ -4344,7 +4347,7 @@ def load_company_data_v2(symbol, api_key=None):
             raise AlphaVantageError(f"V5 could not discover primary company documents for {requested}.")
         data = _v5_build_primary_financial_dataset(requested, company, docs)
         data["source_audit"] = build_source_audit(requested, data, None)
-        data["source_audit"].append(SourceRecord("V5 primary financial engine", "financial statements", "OK" if data["income"].get("annualReports") else "PARTIAL", "", "Primary company documents are the critical-path source; Yahoo/Alpha Vantage are not required.").__dict__)
+        data["source_audit"].append(SourceRecord("V5.3 primary financial engine", "financial statements", "OK" if data["income"].get("annualReports") else "PARTIAL", "", "Primary company documents are the critical-path source; Yahoo/Alpha Vantage are not required.").__dict__)
         data["source_audit"].append(SourceRecord("Yahoo Finance", "secondary cross-check", "OPTIONAL", "https://finance.yahoo.com/", "Not used for UK/LSE financial statements.").__dict__)
         data["source_audit"].append(SourceRecord("Alpha Vantage", "secondary cross-check", "OPTIONAL", "https://www.alphavantage.co/", "Not used for UK/LSE financial statements.").__dict__)
         return data

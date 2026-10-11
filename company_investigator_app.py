@@ -40,7 +40,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.2 • Financial & Evidence Engine + Investment Committee dossier")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.3 • Faster cached Financial & Evidence Engine + Investment Committee dossier")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -86,6 +86,12 @@ def money(value):
     return "N/A" if value is None else f"{value:,.2f}"
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_load_company_data(symbol, key):
+    """Cache successful data retrieval for 24 hours to avoid repeat downloads."""
+    return load_company_data_v2(symbol, key)
+
+
 tab1, tab2 = st.tabs(["🔎 Analyse", "⚖️ Compare"])
 
 with tab1:
@@ -96,9 +102,9 @@ with tab1:
     )
 
     if st.button("🔍 Analyse company", type="primary", disabled=not ticker.strip()):
-        with st.spinner(f"Researching {ticker.upper()}..."):
+        with st.spinner(f"Retrieving a focused set of primary documents for {ticker.upper()}... (first run may take a little while; successful results are cached for 24 hours)"):
             try:
-                data = load_company_data_v2(ticker.upper().strip(), api_key)
+                data = cached_load_company_data(ticker.upper().strip(), api_key)
                 report = analyse(data, api_key)
                 report.data_status = report.data_status or {}
                 report.data_status["source_records"] = data.get("source_records", [])
@@ -134,10 +140,10 @@ with tab1:
                 )
                 st.session_state["full_framework"] = full_investigation_framework_v31(report, thesis, primary_pack)
                 st.session_state["patent_links"] = patent_research_links(report.company, report.symbol)
-                # V4: retrieve live primary/news/corporate evidence after the financial analysis.
-                live_pack = v41_live_research_pack(report, data, previous_snapshot)
-                st.session_state["live_research_pack"] = live_pack
-                st.session_state["live_research_summary"] = live_research_summary(live_pack)
+                # Live web/legal/news enrichment is deliberately deferred to its own button.
+                # The core financial report should render before slower research requests.
+                st.session_state.pop("live_research_pack", None)
+                st.session_state.pop("live_research_summary", None)
                 st.session_state.pop("analysis_error", None)
             except AlphaVantageError as exc:
                 st.session_state["analysis_error"] = str(exc)
@@ -230,6 +236,18 @@ with tab1:
                 )
                 for endpoint, message in endpoint_errors.items():
                     st.write(f"**{endpoint}** — {message}")
+        # Slow live research is opt-in after the core financial report is visible.
+        if st.button("🌐 Run deeper live research (news, filings & company records)", key="run_live_research"):
+            with st.spinner("Collecting live evidence separately from the financial report..."):
+                try:
+                    live_pack = v41_live_research_pack(report, st.session_state.get("raw_data", {}), st.session_state.get("previous_snapshot"))
+                    st.session_state["live_research_pack"] = live_pack
+                    st.session_state["live_research_summary"] = live_research_summary(live_pack)
+                    st.session_state.pop("live_research_error", None)
+                except Exception as exc:
+                    st.session_state["live_research_error"] = str(exc)
+        if st.session_state.get("live_research_error"):
+            st.warning("Live research could not be completed: " + st.session_state["live_research_error"])
         # V4 LIVE RESEARCH
         live_pack = st.session_state.get("live_research_pack")
         if live_pack:
@@ -431,7 +449,7 @@ with tab1:
             for item in forensic.get("flags", []) or ["No major automated forensic warning identified."]:
                 st.warning(item)
 
-        # Historical trends — V5.2 uses explicit x/y mappings and numeric coercion.
+        # Historical trends — V5.3 uses explicit x/y mappings and numeric coercion.
         # This avoids silent chart failures when a sparse financial dataset contains
         # None/object values. Missing points remain missing; they are never invented.
         st.markdown("## 📈 Financial trends")
@@ -773,4 +791,4 @@ with tab2:
                 )
 
 st.divider()
-st.caption("Company Investigator • Version 5.2 • Financial & Evidence Engine + Investment Committee dossier")
+st.caption("Company Investigator • Version 5.3 • Faster cached Financial & Evidence Engine + Investment Committee dossier")
