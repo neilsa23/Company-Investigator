@@ -40,7 +40,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.0 • Financial & Evidence Engine + Investment Committee dossier")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.2 • Financial & Evidence Engine + Investment Committee dossier")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -192,6 +192,13 @@ with tab1:
             fc1.metric("Years extracted", str(len(v5_rows)))
             fc2.metric("Evidence completeness", f"{v5_evidence_completeness(raw_data):.0f}/100")
             fc3.metric("Primary docs processed", str((raw_data.get("financial_extraction") or {}).get("documents_processed", 0)))
+            coverage=(raw_data.get("financial_extraction") or {}).get("field_coverage") or {}
+            if coverage:
+                with st.expander("📐 Financial field coverage", expanded=False):
+                    cov_rows=[]
+                    for field,count in coverage.items():
+                        cov_rows.append({"Field":field.replace("_"," ").title(),"Verified years":count})
+                    st.dataframe(pd.DataFrame(cov_rows).sort_values("Verified years", ascending=False), use_container_width=True, hide_index=True)
             with st.expander("🔎 Financial evidence ledger", expanded=False):
                 ledger = raw_data.get("evidence_ledger") or []
                 if ledger:
@@ -370,14 +377,15 @@ with tab1:
                 st.error(f"Base-case downside: **{upside:.1%}**")
 
         scenario_data = pd.DataFrame([
-            {
-                "Scenario": s.title(),
-                "Fair value": v["scenarios"][s].get("fair_value"),
-            }
+            {"Scenario": s.title(), "Fair value": v.get("scenarios", {}).get(s, {}).get("fair_value")}
             for s in ("bear", "base", "bull")
-        ]).set_index("Scenario")
-
-        st.bar_chart(scenario_data)
+        ])
+        scenario_data["Fair value"] = pd.to_numeric(scenario_data["Fair value"], errors="coerce")
+        scenario_data = scenario_data.dropna(subset=["Fair value"])
+        if not scenario_data.empty:
+            st.bar_chart(scenario_data, x="Scenario", y="Fair value", width="stretch", height=280)
+        else:
+            st.info("Scenario valuation is not available until verified valuation inputs are present.")
 
         # Scorecard
         st.markdown("## 📊 Scorecard")
@@ -423,9 +431,11 @@ with tab1:
             for item in forensic.get("flags", []) or ["No major automated forensic warning identified."]:
                 st.warning(item)
 
-        # Historical trends
+        # Historical trends — V5.2 uses explicit x/y mappings and numeric coercion.
+        # This avoids silent chart failures when a sparse financial dataset contains
+        # None/object values. Missing points remain missing; they are never invented.
         st.markdown("## 📈 Financial trends")
-        trends = report.historical_trends
+        trends = report.historical_trends or {}
         trend_frame = pd.DataFrame({
             "Year": trends.get("years", []),
             "Revenue": trends.get("revenue", []),
@@ -436,27 +446,29 @@ with tab1:
             "Cash": trends.get("cash", []),
             "Shares": trends.get("shares", []),
         })
-
         if not trend_frame.empty:
-            trend_frame = trend_frame.set_index("Year")
+            trend_frame["Year"] = trend_frame["Year"].astype(str)
+            numeric_cols=[c for c in trend_frame.columns if c!="Year"]
+            for c in numeric_cols:
+                trend_frame[c]=pd.to_numeric(trend_frame[c], errors="coerce")
+            trend_frame=trend_frame.dropna(subset=["Year"])
 
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Revenue & net income**")
-                st.line_chart(trend_frame[["Revenue", "Net income"]])
-            with c2:
-                st.markdown("**Operating cash flow & free cash flow**")
-                st.line_chart(trend_frame[["Operating cash flow", "Free cash flow"]])
+            def show_line(title, cols):
+                usable=[c for c in cols if c in trend_frame.columns and trend_frame[c].notna().sum()>=2]
+                if not usable:
+                    st.info(f"{title}: not enough verified historical observations to chart.")
+                    return
+                st.markdown(f"**{title}**")
+                st.line_chart(trend_frame, x="Year", y=usable, width="stretch", height=300)
 
-            c3, c4 = st.columns(2)
-            with c3:
-                st.markdown("**Debt & cash**")
-                st.line_chart(trend_frame[["Debt", "Cash"]])
-            with c4:
-                st.markdown("**Dilution / share count**")
-                st.line_chart(trend_frame[["Shares"]])
+            c1,c2=st.columns(2)
+            with c1: show_line("Revenue & net income", ["Revenue","Net income"])
+            with c2: show_line("Operating cash flow & free cash flow", ["Operating cash flow","Free cash flow"])
+            c3,c4=st.columns(2)
+            with c3: show_line("Debt & cash", ["Debt","Cash"])
+            with c4: show_line("Dilution / share count", ["Shares"])
         else:
-            st.info("Not enough historical data to display trend charts.")
+            st.info("Not enough verified historical data to display trend charts.")
 
         # Key metrics
         st.markdown("## 📋 Key financial metrics")
@@ -761,4 +773,4 @@ with tab2:
                 )
 
 st.divider()
-st.caption("Company Investigator • Version 5.0 • Financial & Evidence Engine + Investment Committee dossier")
+st.caption("Company Investigator • Version 5.2 • Financial & Evidence Engine + Investment Committee dossier")

@@ -3596,6 +3596,8 @@ PRIMARY_UK_SOURCES = {
             ("https://investors.raspberrypi.com/reports/11/document", "Final results 2025"),
             ("https://investors.raspberrypi.com/reports/10/document", "Interim results 2025"),
             ("https://investors.raspberrypi.com/reports/3/document", "Interim results 2024"),
+            ("https://investors.raspberrypi.com/reports/36/document", "Annual Report 2024"),
+            ("https://investors.raspberrypi.com/ipo/documents/3", "Historical Financial Information FY2021-FY2023"),
         ],
     },
 }
@@ -3984,7 +3986,7 @@ def load_company_data_v2(symbol, api_key=None):
 # V5 replaces the fragile regex-only financial parser with a table-aware parser.
 # Primary company documents remain the source of truth; Yahoo/Alpha Vantage are
 # not required for UK/LSE financial statements.
-V5_VERSION = "5.0"
+V5_VERSION = "5.2"
 V4_VERSION = V5_VERSION
 
 
@@ -4070,259 +4072,266 @@ def _v5_row_key(label):
     return None
 
 
-def _v5_extract_document(content, url, title):
-    """Extract financial statement rows with page-level evidence.
 
-    Text extraction is preferred because digital annual reports frequently have
-    borderless tables that table detectors fragment into false numbers. Table
-    extraction is used only to fill fields that text extraction did not capture.
+def _v5_statement_rows_from_text(text):
+    """Return normalized non-empty lines plus a mapping of line index -> row key."""
+    lines=[re.sub(r"\s+", " ", x).strip() for x in (text or "").splitlines() if str(x).strip()]
+    keyed={i:_v5_row_key(line) for i,line in enumerate(lines)}
+    return lines,keyed
+
+
+def _v5_extract_numbers(text):
+    """Extract financial-looking numbers while avoiding years and note references."""
+    if not text:
+        return []
+    s=str(text)
+    # Remove dates/years before parsing values.
+    s=re.sub(r"\b20\d{2}\b", " ", s)
+    # Remove common note references such as (1), Note 12, 12(a).
+    s=re.sub(r"\bNote\s+\d+[A-Za-z]?\b", " ", s, flags=re.I)
+    s=re.sub(r"(?i)\b(?:see|note)\s+\d+", " ", s)
+    pattern=r"\(?[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\)?"
+    vals=[]
+    for tok in re.findall(pattern,s):
+        v=_v5_num(tok)
+        if v is None: continue
+        # Single-digit note/page fragments are a common PDF artefact; retain them
+        # only when decimal or part of a row with other values.
+        vals.append(v)
+    return vals
+
+
+def _v5_extract_document(content, url, title):
+    """Extract financial rows with multiple PDF extraction strategies and evidence.
+
+    V5.2 is deliberately conservative: it never converts missing values to zero.
+    It handles annual-report layouts where the label and numeric values are split
+    across adjacent PDF text lines and where table borders are absent.
     """
     import io
     import pdfplumber
-    year_records = {}
-    evidence = []
-    warnings = []
+    year_records={}; evidence=[]; warnings=[]
+
+    def add_value(year,key,value,pno,method,snippet,confidence):
+        if year is None or value is None: return
+        rec=year_records.setdefault(int(year),{})
+        existing=rec.get(key)
+        if existing is not None:
+            return
+        rec[key]=float(value)
+        evidence.append({"field":key,"value":float(value),"fiscal_year":int(year),
+                         "source_url":url,"document":title,"page":pno,
+                         "confidence":confidence,"method":method,"snippet":str(snippet)[:700]})
+
     try:
-        pdf = pdfplumber.open(io.BytesIO(content))
+        pdf=pdfplumber.open(io.BytesIO(content))
     except Exception as exc:
-        return {}, [], [f"PDF open failed: {exc}"]
+        return {},[],[f"PDF open failed: {exc}"]
 
-    def add_value(year, key, value, pno, method, snippet, confidence):
-        if year is None or value is None:
-            return
-        rec = year_records.setdefault(year, {})
-        # Do not overwrite a high-confidence value with a weaker extraction.
-        existing = rec.get(key)
-        if existing is not None and confidence != "HIGH":
-            return
-        rec[key] = value
-        evidence.append({
-            "field": key, "value": value, "fiscal_year": year,
-            "source_url": url, "document": title, "page": pno,
-            "confidence": confidence, "method": method, "snippet": snippet[:500]
-        })
-
+    pages_seen=0
     with pdf:
-        for pno, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text(x_tolerance=2, y_tolerance=3) or ""
+        for pno,page in enumerate(pdf.pages,1):
+            pages_seen += 1
+            try:
+                text=page.extract_text(x_tolerance=1.5,y_tolerance=3) or ""
+            except Exception:
+                text=""
             if not text.strip():
                 continue
-            low = text.lower()
-            if not any(k in low for k in ("revenue", "profit before tax", "cash generated", "total assets", "cash and cash equivalents", "earnings per share")):
+            low=text.lower()
+            # Wider financial vocabulary catches statements that omit one of the
+            # old V5 trigger phrases.
+            if not any(k in low for k in ("revenue","turnover","gross profit","operating profit",
+                                          "profit before tax","profit for the year","cash generated",
+                                          "cash flows","total assets","cash and cash equivalents",
+                                          "earnings per share","borrowings","total equity")):
                 continue
 
-            multiplier = _v5_unit_multiplier(text[:6000])
-            # Prefer explicit financial-statement year headings. Exclude dates
-            # that occur in narrative sentences where possible.
-            page_years = []
-            for line in text.splitlines()[:25]:
-                yrs = _v5_years_in_cells([line])
-                if len(yrs) >= 1:
-                    for y in yrs:
-                        if y not in page_years:
-                            page_years.append(y)
-            if len(page_years) < 2:
-                page_years = [int(y) for y in re.findall(r"\b(20\d{2})\b", text[:3500]) if 2015 <= int(y) <= datetime.now().year + 1]
-                page_years = list(dict.fromkeys(page_years))[:3]
+            multiplier=_v5_unit_multiplier(text[:7000])
+            lines,keyed=_v5_statement_rows_from_text(text)
+
+            # Find the best year header. Prefer a line with >=2 years near the top
+            # or immediately before a financial row; this avoids picking narrative dates.
+            page_years=[]
+            for i,line in enumerate(lines[:50]):
+                ys=_v5_years_in_cells([line])
+                if len(ys)>=2:
+                    page_years=ys
+                    break
+            if not page_years:
+                candidates=[]
+                for line in lines[:60]:
+                    for y in _v5_years_in_cells([line]):
+                        if y not in candidates: candidates.append(y)
+                page_years=candidates[:4]
             if not page_years:
                 continue
 
-            # -------- Primary pass: clean text rows --------
-            text_fields_found = set()
-            lines = [re.sub(r"\s+", " ", x).strip() for x in text.splitlines() if x.strip()]
-            for line in lines:
-                key = _v5_row_key(line)
-                if not key:
-                    continue
-                # Only parse the portion after the label. This prevents the
-                # statement heading/year tokens from being interpreted as data.
-                label_patterns = {
+            # Parse text rows. If the values are on the next line(s), consume up to
+            # three adjacent lines until another labelled financial row begins.
+            for i,line in enumerate(lines):
+                key=keyed.get(i)
+                if not key: continue
+                patterns={
                     "revenue":["Revenue","Group revenue","Sales","Turnover"],
-                    "gross_profit":["Gross profit"], "operating_profit":["Operating profit","Profit from operations","Operating income"],
-                    "ebitda":["Adjusted EBITDA","EBITDA"], "profit_before_tax":["Profit before tax","Profit/(loss) before tax"],
+                    "gross_profit":["Gross profit"],
+                    "operating_profit":["Operating profit","Profit from operations","Operating income"],
+                    "ebitda":["Adjusted EBITDA","EBITDA"],
+                    "profit_before_tax":["Profit before tax","Profit/(loss) before tax","Profit / (loss) before tax"],
                     "net_income":["Profit for the year","Profit for the period","Profit attributable to owners","Net income","Net profit"],
                     "eps":["Basic earnings per share","Diluted earnings per share","Basic EPS","Diluted EPS","Earnings per share"],
                     "operating_cashflow":["Net cash generated from operating activities","Cash generated from operating activities","Operating cash flow","Net cash from operating activities"],
                     "capex":["Purchase of property, plant and equipment","Purchase of PPE","Capital expenditure","Capital expenditures","Additions to property"],
-                    "free_cash_flow":["Free cash flow"], "cash":["Cash and cash equivalents","Cash and cash equivalents at end","Cash at bank"],
-                    "debt":["Total borrowings","Borrowings","Total debt","Bank borrowings"], "net_debt":["Net debt"],
-                    "assets":["Total assets"], "liabilities":["Total liabilities"], "equity":["Total equity","Total shareholders' equity","Equity attributable to owners"],
-                    "shares":["Weighted average number of shares","Weighted average shares","Number of shares in issue","Shares in issue"]
-                }
-                patterns = label_patterns.get(key, [])
-                remainder = line
-                for pat in sorted(patterns, key=len, reverse=True):
-                    m = re.search(re.escape(pat), line, flags=re.I)
+                    "free_cash_flow":["Free cash flow"],
+                    "cash":["Cash and cash equivalents","Cash and cash equivalents at end","Cash at bank"],
+                    "debt":["Total borrowings","Borrowings","Total debt","Bank borrowings"],
+                    "net_debt":["Net debt"],
+                    "assets":["Total assets"],"liabilities":["Total liabilities"],
+                    "equity":["Total equity","Total shareholders' equity","Equity attributable to owners"],
+                    "shares":["Weighted average number of shares","Weighted average shares","Number of shares in issue","Shares in issue"]}
+                remainder=line
+                for pat in sorted(patterns.get(key,[]),key=len,reverse=True):
+                    m=re.search(re.escape(pat),line,flags=re.I)
                     if m:
-                        remainder = line[m.end():]
+                        remainder=line[m.end():]
                         break
-                # Remove year labels if they are on the same line.
-                remainder = re.sub(r"\b20\d{2}\b", " ", remainder)
-                nums = re.findall(r"\(?[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?", remainder)
-                vals = [_v5_num(x) for x in nums]
-                vals = [v for v in vals if v is not None]
-                if not vals:
-                    continue
-                # Ignore implausible parser fragments such as a solitary digit
-                # from a split decimal; text extraction generally gives clean rows.
-                if len(vals) > len(page_years):
-                    vals = vals[:len(page_years)]
-                for idx, val in enumerate(vals):
-                    if idx >= len(page_years):
-                        break
-                    year = page_years[idx]
-                    scaled = val if key == "eps" else val * (multiplier if key != "shares" else multiplier)
-                    add_value(year, key, scaled, pno, "PDF text extraction", line, "HIGH")
-                    text_fields_found.add(key)
+                chunks=[remainder]
+                vals=_v5_extract_numbers(remainder)
+                if len(vals)<len(page_years):
+                    for j in range(i+1,min(i+4,len(lines))):
+                        if keyed.get(j): break
+                        chunks.append(lines[j])
+                        vals.extend(_v5_extract_numbers(lines[j]))
+                        if len(vals)>=len(page_years): break
+                # Keep at most one value per identified fiscal year.
+                if len(vals)>len(page_years): vals=vals[:len(page_years)]
+                for idx,val in enumerate(vals):
+                    if idx>=len(page_years): break
+                    scaled=val if key=="eps" else val*multiplier
+                    add_value(page_years[idx],key,scaled,pno,"PDF text extraction", " | ".join(chunks),"HIGH")
 
-            # -------- Secondary pass: table extraction for missing fields --------
-            needed = {"revenue","gross_profit","operating_profit","ebitda","profit_before_tax","net_income","eps","operating_cashflow","capex","free_cash_flow","cash","debt","net_debt","assets","liabilities","equity","shares"} - text_fields_found
-            if not needed:
-                continue
-            tables = []
+            # Secondary table pass. Use both ruled and text strategies, but only on
+            # statement-like pages to control runtime.
             try:
-                tables = page.extract_tables({
-                    "vertical_strategy":"lines", "horizontal_strategy":"lines",
-                    "snap_tolerance":3, "join_tolerance":3, "edge_min_length":20,
-                }) or []
+                strategies=[
+                    {"vertical_strategy":"lines","horizontal_strategy":"lines","snap_tolerance":3,"join_tolerance":3,"edge_min_length":20},
+                    {"vertical_strategy":"text","horizontal_strategy":"text","text_x_tolerance":2,"text_y_tolerance":3},
+                ]
+                for settings in strategies:
+                    tables=page.extract_tables(settings) or []
+                    for table in tables:
+                        rows=[[str(c or "").replace("\n"," ").strip() for c in (row or [])] for row in table]
+                        years=[]
+                        for row in rows[:8]:
+                            for y in _v5_years_in_cells(row):
+                                if y not in years: years.append(y)
+                        if not years: years=page_years
+                        for row in rows:
+                            if not row: continue
+                            key=_v5_row_key(row[0])
+                            if not key: continue
+                            vals=[]
+                            for cell in row[1:]:
+                                vals.extend(_v5_extract_numbers(cell))
+                            vals=vals[:len(years)]
+                            for idx,val in enumerate(vals):
+                                scaled=val if key=="eps" else val*multiplier
+                                add_value(years[idx],key,scaled,pno,"PDF table extraction"," | ".join(row),"MEDIUM")
             except Exception:
-                tables = []
-            for table in tables:
-                rows = [[str(c or "").replace("\n", " ").strip() for c in (row or [])] for row in table]
-                years = []
-                for row in rows[:6]:
-                    for y in _v5_years_in_cells(row):
-                        if y not in years: years.append(y)
-                if not years: years = page_years
-                for row in rows:
-                    if not row: continue
-                    key = _v5_row_key(row[0])
-                    if key not in needed: continue
-                    nums=[]
-                    for cell in row[1:]:
-                        # Reject table cells that are clearly fragmented text.
-                        cell_s=str(cell or '').strip()
-                        if cell_s and len(cell_s) < 20:
-                            val=_v5_num(cell_s)
-                            if val is not None: nums.append(val)
-                    if not nums: continue
-                    for idx,val in enumerate(nums[:len(years)]):
-                        scaled = val if key == "eps" else val * multiplier
-                        add_value(years[idx], key, scaled, pno, "PDF table extraction", " | ".join(row), "MEDIUM")
+                pass
 
     if not year_records:
         warnings.append("No pages containing recognisable financial-statement rows were parsed.")
-    return year_records, evidence, warnings
+    if pages_seen >= 150:
+        warnings.append(f"PDF contains {pages_seen} pages; extraction was completed across the available report pages but verbose notes may be excluded.")
+    return year_records,evidence,warnings
 
 def _v5_merge_statement_value(rec, key):
     return rec.get(key)
 
 
+
+def _v5_doc_priority(title):
+    t=str(title or "").lower()
+    if "annual report" in t or "annual accounts" in t: return 100
+    if "historical financial information" in t or "hfi" in t: return 95
+    if "final results" in t: return 90
+    if "interim results" in t: return 60
+    return 30
+
+
 def _v5_build_primary_financial_dataset(symbol, company, documents):
-    all_years = {}
-    all_evidence = []
-    warnings = []
-    source_records = []
-    processed = 0
-    for d in documents[:12]:
+    all_years={}; all_sources={}; all_evidence=[]; warnings=[]; source_records=[]; processed=0; interim=[]
+    # Prioritise annual/historical sources, while retaining interim data separately.
+    docs=sorted(documents[:10],key=lambda d:_v5_doc_priority(d.get("title")),reverse=True)
+    for d in docs:
         try:
-            r = _v42_get(d["url"], timeout=45)
-            ctype = (r.headers.get("content-type") or "").lower()
-            if "pdf" not in ctype and not d["url"].lower().endswith(".pdf"):
-                # The official /reports/<id>/document endpoint should redirect to PDF.
-                # If a server does not expose the content type, inspect magic bytes.
-                if not r.content.startswith(b"%PDF"):
-                    continue
-            records, ev, warns = _v5_extract_document(r.content, d["url"], d.get("title", "Primary report"))
+            r=_v42_get(d["url"],timeout=30)
+            ctype=(r.headers.get("content-type") or "").lower()
+            if "pdf" not in ctype and not d["url"].lower().endswith(".pdf") and not r.content.startswith(b"%PDF"):
+                continue
+            records,ev,warns=_v5_extract_document(r.content,d["url"],d.get("title","Primary report"))
             warnings.extend(warns)
-            if records:
-                processed += 1
-                for year, rec in records.items():
-                    dst = all_years.setdefault(year, {})
-                    # Prefer annual report values over interim/report duplicates.
-                    for k, v in rec.items():
-                        if v is not None and (k not in dst or "Annual Report" in d.get("title", "")):
-                            dst[k] = v
-                all_evidence.extend(ev)
-                source_records.append(SourceRecord(
-                    "Company primary document", "financial statements", "OK", d["url"],
-                    f"Extracted {len(records)} fiscal-year statement records using PDF table/text extraction."
-                ).__dict__)
-            else:
-                warnings.append(f"No financial table extracted from {d.get('title', d['url'])}.")
+            if not records:
+                warnings.append(f"No financial table extracted from {d.get('title',d['url'])}.")
+                continue
+            processed += 1
+            priority=_v5_doc_priority(d.get("title"))
+            is_interim="interim" in str(d.get("title","")).lower()
+            for year,rec in records.items():
+                if is_interim:
+                    interim.setdefault(year,{})
+                    for k,v in rec.items():
+                        interim[year].setdefault(k,v)
+                    continue
+                dst=all_years.setdefault(year,{})
+                srcp=all_sources.setdefault(year,{})
+                for k,v in rec.items():
+                    if v is None: continue
+                    if k not in dst or priority>srcp.get(k,-1):
+                        dst[k]=v; srcp[k]=priority
+            all_evidence.extend(ev)
+            source_records.append(SourceRecord("Company primary document","financial statements","OK",d["url"],f"Extracted {len(records)} fiscal-year statement records using multi-pass PDF extraction.").__dict__)
         except Exception as exc:
-            warnings.append(f"Document retrieval/extraction failed for {d.get('title', d['url'])}: {exc}")
+            warnings.append(f"Document retrieval/extraction failed for {d.get('title',d['url'])}: {exc}")
 
-    # Compute derived FCF where the document gives operating cash flow and capex.
-    for year, rec in all_years.items():
+    # Derived metrics.
+    for year,rec in all_years.items():
         if rec.get("free_cash_flow") is None and rec.get("operating_cashflow") is not None and rec.get("capex") is not None:
-            rec["free_cash_flow"] = rec["operating_cashflow"] - abs(rec["capex"])
-            all_evidence.append({
-                "field": "free_cash_flow", "value": rec["free_cash_flow"], "fiscal_year": year,
-                "source_url": "derived", "document": "Derived from primary statements",
-                "page": None, "confidence": "HIGH", "method": "Operating cash flow less capex",
-                "snippet": "FCF = operating cash flow - capital expenditure"
-            })
+            rec["free_cash_flow"]=rec["operating_cashflow"]-abs(rec["capex"])
+            all_evidence.append({"field":"free_cash_flow","value":rec["free_cash_flow"],"fiscal_year":year,"source_url":"derived","document":"Derived from primary statements","page":None,"confidence":"HIGH","method":"Operating cash flow less capex","snippet":"FCF = operating cash flow - absolute capital expenditure"})
+        if rec.get("net_debt") is None and rec.get("debt") is not None and rec.get("cash") is not None:
+            rec["net_debt"]=rec["debt"]-rec["cash"]
+            all_evidence.append({"field":"net_debt","value":rec["net_debt"],"fiscal_year":year,"source_url":"derived","document":"Derived from primary statements","page":None,"confidence":"HIGH","method":"Debt less cash","snippet":"Net debt = debt - cash"})
 
-    years = sorted(all_years.keys(), reverse=True)
-    currency = "USD" if "raspberry" in company.lower() else "GBP"
-    income_reports, cash_reports, balance_reports = [], [], []
-    money_fields = {"revenue", "gross_profit", "operating_profit", "ebitda", "profit_before_tax", "net_income"}
+    years=sorted(all_years.keys())
+    currency="USD" if "raspberry" in company.lower() else "GBP"
+    income_reports=[]; cash_reports=[]; balance_reports=[]
     for y in years:
-        r = all_years[y]
-        inc = {"fiscalDateEnding": f"{y}-12-31", "reportedCurrency": currency}
-        mapping = {"revenue":"totalRevenue", "net_income":"netIncome", "operating_profit":"operatingIncome", "profit_before_tax":"profitBeforeTax", "eps":"reportedEPS", "shares":"weightedAverageShsOutDil"}
-        for src, dst in mapping.items():
-            if src in r:
-                inc[dst] = r[src]
-        if inc.keys() - {"fiscalDateEnding", "reportedCurrency"}:
-            income_reports.append(inc)
-        c = {"fiscalDateEnding": f"{y}-12-31", "reportedCurrency": currency}
-        if "operating_cashflow" in r: c["operatingCashflow"] = r["operating_cashflow"]
-        if "capex" in r: c["capitalExpenditures"] = -abs(r["capex"])
-        if "free_cash_flow" in r: c["freeCashFlow"] = r["free_cash_flow"]
-        if c.keys() - {"fiscalDateEnding", "reportedCurrency"}: cash_reports.append(c)
-        b = {"fiscalDateEnding": f"{y}-12-31", "reportedCurrency": currency}
-        for src, dst in (("cash","cashAndCashEquivalentsAtCarryingValue"),("debt","shortLongTermDebtTotal"),("assets","totalAssets"),("liabilities","totalLiabilities"),("equity","totalShareholderEquity")):
-            if src in r: b[dst] = r[src]
-        if b.keys() - {"fiscalDateEnding", "reportedCurrency"}: balance_reports.append(b)
+        r=all_years[y]
+        inc={"fiscalDateEnding":f"{y}-12-31","reportedCurrency":currency}
+        mapping={"revenue":"totalRevenue","net_income":"netIncome","operating_profit":"operatingIncome","profit_before_tax":"profitBeforeTax","eps":"reportedEPS","shares":"weightedAverageShsOutDil"}
+        for src,dst in mapping.items():
+            if src in r: inc[dst]=r[src]
+        if len(inc)>2: income_reports.append(inc)
+        c={"fiscalDateEnding":f"{y}-12-31","reportedCurrency":currency}
+        for src,dst in (("operating_cashflow","operatingCashflow"),("capex","capitalExpenditures"),("free_cash_flow","freeCashFlow")):
+            if src in r: c[dst]= -abs(r[src]) if src=="capex" else r[src]
+        if len(c)>2: cash_reports.append(c)
+        b={"fiscalDateEnding":f"{y}-12-31","reportedCurrency":currency}
+        for src,dst in (("cash","cashAndCashEquivalentsAtCarryingValue"),("debt","shortLongTermDebtTotal"),("assets","totalAssets"),("liabilities","totalLiabilities"),("equity","totalShareholderEquity")):
+            if src in r: b[dst]=r[src]
+        if len(b)>2: balance_reports.append(b)
 
-    latest = all_years[years[0]] if years else {}
-    price, price_source = _v42_market_price(symbol)
-    if price is not None and _v42_normalise_ticker(symbol).endswith(".L") and price > 100:
-        price /= 100.0
-    shares = latest.get("shares")
-    eps = latest.get("eps")
-    market_cap = price * shares if price is not None and shares else None
-    overview = {
-        "Symbol": _v42_normalise_ticker(symbol), "Name": company, "Sector":"Unknown", "Industry":"Unknown",
-        "Description":"Primary-document financial dataset with page-level evidence.",
-        "Currency": currency, "ReportingCurrency": currency, "Price": price,
-        "PriceCurrency":"GBP" if _v42_normalise_ticker(symbol).endswith(".L") else currency,
-        "MarketCapitalization": market_cap, "RevenueTTM": latest.get("revenue"), "EPS": eps,
-        "SharesOutstanding": shares, "PERatio": (price / eps) if price is not None and eps not in (None,0) else None,
-    }
-    if price_source:
-        source_records.append(SourceRecord("Independent market quote", "current price only", "OK", price_source, "Price is separate from company financial statements.").__dict__)
-    if not income_reports:
-        warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
-    evidence_ledger = []
-    for e in all_evidence:
-        evidence_ledger.append({
-            "area":"Financials", "source":"Company primary document" if e.get("source_url") != "derived" else "Derived from primary statements",
-            "date":e.get("fiscal_year"), "document":e.get("document"), "page":e.get("page"),
-            "claim":f"{e.get('field')}: {e.get('value')}", "confidence":e.get("confidence"), "materiality":"HIGH",
-            "url":e.get("source_url") if e.get("source_url") != "derived" else ""
-        })
-    return {
-        "symbol_requested":symbol, "symbol_used":_v42_normalise_ticker(symbol), "overview":overview,
-        "income":{"annualReports":income_reports}, "balance":{"annualReports":balance_reports}, "cash":{"annualReports":cash_reports},
-        "errors":{}, "warnings":list(dict.fromkeys(warnings)), "source_records":source_records,
-        "primary_document_evidence":all_evidence, "primary_documents":documents,
-        "evidence_ledger":evidence_ledger, "financial_years":years, "financial_dataset":all_years,
-        "provider_version":"V5 primary financial & evidence engine", "market_price_source":price_source,
-        "financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')})}
-    }
+    latest=all_years[max(years)] if years else {}
+    price,price_source=_v42_market_price(symbol)
+    if price is not None and _v42_normalise_ticker(symbol).endswith(".L") and price>100: price/=100.0
+    shares=latest.get("shares"); eps=latest.get("eps"); market_cap=price*shares if price is not None and shares else None
+    overview={"Symbol":_v42_normalise_ticker(symbol),"Name":company,"Sector":"Unknown","Industry":"Unknown","Description":"Primary-document financial dataset with page-level evidence.","Currency":currency,"ReportingCurrency":currency,"Price":price,"PriceCurrency":"GBP" if _v42_normalise_ticker(symbol).endswith(".L") else currency,"MarketCapitalization":market_cap,"RevenueTTM":latest.get("revenue"),"EPS":eps,"SharesOutstanding":shares,"PERatio":(price/eps) if price is not None and eps not in (None,0) else None}
+    if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
+    if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
+    evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.2 primary financial & evidence engine","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
@@ -4359,20 +4368,15 @@ def _v5_us_fallback(requested, api_key=None):
 
 
 def v5_financial_summary(data):
-    ds = data.get("financial_dataset") or {}
-    years = sorted(ds.keys(), reverse=True)
-    rows = []
-    for y in years:
-        r = ds[y]
-        rows.append({
-            "Year": y, "Revenue": r.get("revenue"), "Gross profit": r.get("gross_profit"),
-            "Operating profit": r.get("operating_profit"), "Net income": r.get("net_income"),
-            "EPS": r.get("eps"), "Operating cash flow": r.get("operating_cashflow"),
-            "Capex": r.get("capex"), "Free cash flow": r.get("free_cash_flow"),
-            "Cash": r.get("cash"), "Debt": r.get("debt"), "Net debt": r.get("net_debt"),
-        })
+    dataset=data.get("financial_dataset") or {}
+    fields=[("Revenue","revenue"),("Gross profit","gross_profit"),("Operating profit","operating_profit"),("EBITDA","ebitda"),("Profit before tax","profit_before_tax"),("Net income","net_income"),("EPS","eps"),("Operating cash flow","operating_cashflow"),("Capex","capex"),("Free cash flow","free_cash_flow"),("Cash","cash"),("Debt","debt"),("Net debt","net_debt"),("Assets","assets"),("Liabilities","liabilities"),("Equity","equity"),("Shares","shares")]
+    rows=[]
+    for year in sorted(dataset.keys()):
+        rec=dataset.get(year,{})
+        row={"Year":year}
+        for label,key in fields: row[label]=rec.get(key)
+        rows.append(row)
     return rows
-
 
 def v5_evidence_completeness(data):
     ds = data.get("financial_dataset") or {}
