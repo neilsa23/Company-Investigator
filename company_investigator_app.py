@@ -41,7 +41,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.8 • Financial integrity checks, evidence coverage + compact figures")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.9 • Source-audit honesty, debt/lease separation + compact figures")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -120,15 +120,25 @@ _FINANCIAL_AMOUNT_TERMS = (
     "revenue", "gross profit", "operating profit", "ebitda", "profit before tax",
     "net income", "net profit", "cash", "debt", "assets", "liabilities", "equity",
     "market capital", "free cash flow", "operating cash flow", "capital expenditure",
-    "capex", "shares outstanding", "enterprise value", "dividend paid",
+    "capex", "shares outstanding", "enterprise value", "dividend paid", "lease liabilities",
 )
 
-def compact_metric_value(metric_name, value):
-    """Compact large financial amounts in the key-metrics table, not prices or ratios."""
+def compact_metric_value(metric_name, value, valuation_currency=None):
+    """Format key metrics with compact amounts and readable per-share values."""
     name = str(metric_name or "").lower()
+    if value is None:
+        return "—"
+    if name == "eps":
+        try:
+            n = float(value)
+            currency = str(valuation_currency or "").upper()
+            symbol = "£" if currency == "GBP" else ("$" if currency == "USD" else "")
+            return f"{symbol}{n:.3f}/share"
+        except (TypeError, ValueError):
+            return value
     if any(term in name for term in _FINANCIAL_AMOUNT_TERMS):
         return compact_financial_value(value, "Shares" if "shares" in name else "")
-    return value if value is not None else "—"
+    return value
 
 def has_valid_price(value):
     try:
@@ -271,11 +281,11 @@ with tab1:
                         display_row[column_name] = compact_financial_value(value, column_name)
                 display_rows.append(display_row)
             currency = (raw_data.get("overview") or {}).get("ReportingCurrency") or (raw_data.get("overview") or {}).get("Currency") or "source currency not confirmed"
-            st.caption(f"Financial statement values use compact units (k = thousand, m = million, bn = billion). Reporting currency: {currency}. EPS is per share. Original numeric values are retained for calculations; missing values are unknown, not zero.")
+            st.caption(f"Financial statement values use compact units (k = thousand, m = million, bn = billion). Reporting currency: {currency}. Statement EPS is in reporting-currency units per share. Original numeric values are retained for calculations; missing values are unknown, not zero.")
             st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
             fc1, fc2, fc3 = st.columns(3)
             fc1.metric("Years extracted", str(len(v5_rows)))
-            fc2.metric("Evidence completeness", f"{v5_evidence_completeness(raw_data):.0f}/100")
+            fc2.metric("Evidence completeness", f"{v5_evidence_completeness(raw_data):.0f}/100", help="Coverage heuristic for populated years/fields and evidence routes; not a score of factual accuracy.")
             fc3.metric("Primary docs processed", str((raw_data.get("financial_extraction") or {}).get("documents_processed", 0)))
             coverage=(raw_data.get("financial_extraction") or {}).get("field_coverage") or {}
             if coverage:
@@ -594,7 +604,11 @@ with tab1:
 
         metric_rows = []
         for k, value in metrics.items():
-            metric_rows.append({"Metric": k, "Value": compact_metric_value(k, value)})
+            display_name = k
+            if str(k).strip().lower() == "eps":
+                val_currency = str(metrics.get("Valuation currency") or "").upper()
+                display_name = f"EPS ({val_currency}/share)" if val_currency else "EPS (per share; currency unconfirmed)"
+            metric_rows.append({"Metric": display_name, "Value": compact_metric_value(k, value, metrics.get("Valuation currency"))})
 
         st.dataframe(
             pd.DataFrame(metric_rows),

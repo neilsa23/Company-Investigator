@@ -4341,12 +4341,12 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if base_symbol == "RPI":
         verified_rpi = {
             # USD absolute units. EBITDA values are the issuer's adjusted EBITDA.
-            # EPS is stored in USD/share (not cents) so price/EPS calculations use
-            # consistent units. Capex is cash purchases of intangible assets and PPE.
-            # Total debt here means current + non-current lease liabilities.
-            2023: {"revenue":265_800_000.0, "gross_profit":66_000_000.0, "operating_profit":37_600_000.0, "profit_before_tax":38_200_000.0, "net_income":31_600_000.0, "eps":0.1950, "ebitda":43_800_000.0, "operating_cashflow":21_100_000.0, "capex":25_800_000.0, "cash":42_200_000.0, "assets":265_300_000.0, "liabilities":106_100_000.0, "equity":159_200_000.0, "debt":7_100_000.0},
-            2024: {"revenue":259_500_000.0, "gross_profit":63_200_000.0, "operating_profit":17_600_000.0, "profit_before_tax":16_300_000.0, "net_income":11_700_000.0, "eps":0.0648, "ebitda":37_200_000.0, "operating_cashflow":-3_200_000.0, "capex":23_100_000.0, "cash":45_800_000.0, "assets":331_400_000.0, "liabilities":121_000_000.0, "equity":210_400_000.0, "debt":6_200_000.0},
-            2025: {"revenue":323_200_000.0, "gross_profit":77_800_000.0, "operating_profit":28_000_000.0, "profit_before_tax":26_500_000.0, "net_income":21_700_000.0, "eps":0.1122, "ebitda":46_400_000.0, "operating_cashflow":6_200_000.0, "capex":18_300_000.0, "cash":28_100_000.0, "assets":331_600_000.0, "liabilities":90_800_000.0, "equity":240_800_000.0, "debt":8_900_000.0},
+            # EPS is USD/share. Capex is cash capital expenditure, not total additions.
+            # Lease liabilities are kept separate from borrowings; the issuer stated
+            # it had no debt at FY2025 year-end, despite lease liabilities.
+            2023: {"revenue":265_800_000.0, "gross_profit":66_000_000.0, "operating_profit":37_600_000.0, "profit_before_tax":38_200_000.0, "net_income":31_600_000.0, "eps":0.1950, "ebitda":43_800_000.0, "operating_cashflow":21_100_000.0, "capex":25_800_000.0, "cash":42_200_000.0, "assets":265_300_000.0, "liabilities":106_100_000.0, "equity":159_200_000.0, "lease_liabilities":7_100_000.0},
+            2024: {"revenue":259_500_000.0, "gross_profit":63_200_000.0, "operating_profit":17_600_000.0, "profit_before_tax":16_300_000.0, "net_income":11_700_000.0, "eps":0.0648, "ebitda":37_200_000.0, "operating_cashflow":-3_200_000.0, "capex":23_100_000.0, "cash":45_800_000.0, "assets":331_400_000.0, "liabilities":121_000_000.0, "equity":210_400_000.0, "lease_liabilities":6_200_000.0},
+            2025: {"revenue":323_200_000.0, "gross_profit":77_800_000.0, "operating_profit":28_000_000.0, "profit_before_tax":26_500_000.0, "net_income":21_700_000.0, "eps":0.1122, "ebitda":46_400_000.0, "operating_cashflow":6_200_000.0, "capex":18_200_000.0, "cash":28_100_000.0, "assets":331_600_000.0, "liabilities":90_800_000.0, "equity":240_800_000.0, "lease_liabilities":8_900_000.0, "debt":0.0},
         }
         for year, facts in verified_rpi.items():
             # For this known test issuer, discard unverified regex values rather than
@@ -4363,14 +4363,18 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
                 source_url = ("https://www.lse.co.uk/rns/RPI/fy-2025-results-n2lz4nht5hqu0cg.html" if year == 2025
                               else "https://www.lse.co.uk/rns/RPI/fy-2024-final-results-0jh8ophsnc25o5h.html")
                 unit_note = "USD/share" if field == "eps" else "USD absolute units"
-                if field == "capex":
+                if field == "capex" and year == 2025:
+                    method_note = "Issuer-reported total cash capital expenditure of $18.2m"
+                elif field == "capex":
                     method_note = "Cash purchases of intangible assets plus property, plant and equipment"
                 elif field == "operating_cashflow":
                     method_note = "Net cash flows generated from/(used in) operating activities"
                 elif field == "ebitda":
                     method_note = "Issuer-reported adjusted EBITDA"
+                elif field == "lease_liabilities":
+                    method_note = "Current plus non-current lease liabilities; shown separately from borrowings"
                 elif field == "debt":
-                    method_note = "Current plus non-current lease liabilities"
+                    method_note = "Issuer states no debt at FY2025 year-end; revolving credit facility was undrawn"
                 else:
                     method_note = "Cross-checked published annual financial statements"
                 all_evidence.append({"field":field,"value":value,"fiscal_year":year,
@@ -4378,7 +4382,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
                     "document":f"Raspberry Pi FY{year} final results / Annual Report",
                     "page":None,"confidence":"HIGH","method":method_note,
                     "snippet":f"Verified annual fact: {field} = {value}; {unit_note}. Cross-checked against issuer annual results. {method_note}."})
-        warnings.append("Raspberry Pi FY2023–FY2025 headline income-statement, selected cash-flow and balance-sheet totals were cross-checked against published annual results. EBITDA is the issuer's adjusted EBITDA; EPS is stored in USD/share; capex is cash purchases of intangible assets plus property, plant and equipment. Debt is defined as current plus non-current lease liabilities. Other fields remain blank unless independently verified; see evidence ledger.")
+        warnings.append("Raspberry Pi FY2023–FY2025 headline income-statement, selected cash-flow and balance-sheet totals were cross-checked against published annual results. EBITDA is the issuer's adjusted EBITDA; EPS is stored in USD/share. FY2025 cash capex is $18.2m. Lease liabilities are reported separately from borrowings; the issuer reported no debt at FY2025 year-end. Other fields remain blank unless independently verified; see evidence ledger.")
 
     # Reject implausible share counts and ratios from PDF text artefacts before
     # deriving market capitalisation, dilution or other ratios. The threshold is a
@@ -4388,7 +4392,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
         if shares is not None and (shares <= 0 or shares > 1e12):
             rec.pop("shares", None)
             warnings.append(f"Rejected implausible shares value for {year}; source extraction needs manual verification.")
-        for field in ("revenue", "gross_profit", "operating_profit", "ebitda", "profit_before_tax", "net_income", "operating_cashflow", "capex", "free_cash_flow", "cash", "debt", "net_debt", "assets", "liabilities", "equity"):
+        for field in ("revenue", "gross_profit", "operating_profit", "ebitda", "profit_before_tax", "net_income", "operating_cashflow", "capex", "free_cash_flow", "cash", "debt", "lease_liabilities", "net_debt", "assets", "liabilities", "equity"):
             value = rec.get(field)
             if value is not None and abs(value) > 1e14:
                 rec.pop(field, None)
@@ -4418,7 +4422,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
             if src in r: c[dst]= -abs(r[src]) if src=="capex" else r[src]
         if len(c)>2: cash_reports.append(c)
         b={"fiscalDateEnding":f"{y}-12-31","reportedCurrency":currency}
-        for src,dst in (("cash","cashAndCashEquivalentsAtCarryingValue"),("debt","shortLongTermDebtTotal"),("assets","totalAssets"),("liabilities","totalLiabilities"),("equity","totalShareholderEquity")):
+        for src,dst in (("cash","cashAndCashEquivalentsAtCarryingValue"),("debt","shortLongTermDebtTotal"),("lease_liabilities","capitalLeaseObligations"),("assets","totalAssets"),("liabilities","totalLiabilities"),("equity","totalShareholderEquity")):
             if src in r: b[dst]=r[src]
         if len(b)>2: balance_reports.append(b)
 
@@ -4435,7 +4439,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.8 RPI financial integrity checks, verified dataset and compact display","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.9 source-audit honesty, lease-debt separation, EPS formatting and RPI cash-capex correction","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
@@ -4473,7 +4477,7 @@ def _v5_us_fallback(requested, api_key=None):
 
 def v5_financial_summary(data):
     dataset=data.get("financial_dataset") or {}
-    fields=[("Revenue","revenue"),("Gross profit","gross_profit"),("Operating profit","operating_profit"),("Adjusted EBITDA","ebitda"),("Profit before tax","profit_before_tax"),("Net income","net_income"),("EPS","eps"),("Operating cash flow","operating_cashflow"),("Capex","capex"),("Free cash flow","free_cash_flow"),("Cash","cash"),("Debt","debt"),("Net debt","net_debt"),("Assets","assets"),("Liabilities","liabilities"),("Equity","equity"),("Shares","shares")]
+    fields=[("Revenue","revenue"),("Gross profit","gross_profit"),("Operating profit","operating_profit"),("Adjusted EBITDA","ebitda"),("Profit before tax","profit_before_tax"),("Net income","net_income"),("EPS","eps"),("Operating cash flow","operating_cashflow"),("Capex","capex"),("Free cash flow","free_cash_flow"),("Cash","cash"),("Borrowings","debt"),("Lease liabilities","lease_liabilities"),("Net debt / (cash)","net_debt"),("Assets","assets"),("Liabilities","liabilities"),("Equity","equity"),("Shares","shares")]
     rows=[]
     for year in sorted(dataset.keys()):
         rec=dataset.get(year,{})
@@ -4579,12 +4583,39 @@ def build_financial_integrity_checks(data):
 
         # Ensure every stored field has an evidence record. Derived fields may
         # legitimately cite a calculation rather than a company document.
-        evidence_fields = {e.get("field") for e in evidence if str(e.get("fiscal_year")) == str(year) or str(e.get("fiscal_year")) == str(int(year)) if isinstance(e, dict) and e.get("fiscal_year") is not None}
-        no_evidence = [field for field in row if field not in evidence_fields]
-        if no_evidence:
-            add("Field evidence coverage", "REVIEW", "No matching evidence-ledger row for: " + ", ".join(sorted(no_evidence)) + ".", year)
+        year_evidence = [e for e in evidence if isinstance(e, dict) and str(e.get("fiscal_year")) == str(year)]
+        matched = {}
+        for e in year_evidence:
+            field = e.get("field")
+            if field:
+                matched.setdefault(field, []).append(e)
+        no_reference = []
+        weak_reference = []
+        for field in row:
+            candidates = matched.get(field, [])
+            if not candidates:
+                no_reference.append(field)
+                continue
+            valid = any(str(e.get("source_url") or "").startswith("http") or (e.get("source_url") == "derived" and e.get("method")) for e in candidates)
+            documented = any(e.get("document") and e.get("method") for e in candidates)
+            if not (valid and documented):
+                weak_reference.append(field)
+        if no_reference or weak_reference:
+            detail_parts = []
+            if no_reference: detail_parts.append("no field/year evidence record: " + ", ".join(sorted(no_reference)))
+            if weak_reference: detail_parts.append("incomplete source reference/method: " + ", ".join(sorted(weak_reference)))
+            add("Field evidence reference coverage", "REVIEW", "; ".join(detail_parts) + ".", year)
         else:
-            add("Field evidence coverage", "PASS", f"Evidence-ledger entries found for all {len(row)} stored fields.", year)
+            add("Field evidence reference coverage", "PASS", f"All {len(row)} stored fields have a matching field/year evidence record with a source reference or derivation method.", year)
+
+        source_claims = [e for e in year_evidence if e.get("source_url") not in (None, "", "derived")]
+        weak_page_audit = [e.get("field", "unknown field") for e in source_claims if not e.get("page") and (not e.get("snippet") or str(e.get("snippet", "")).startswith("Verified annual fact:"))]
+        if weak_page_audit:
+            add("Page-level evidence auditability", "REVIEW", "Source URL is recorded, but a page number or source-specific excerpt is missing for: " + ", ".join(sorted(set(weak_page_audit))) + ". The figure may be cross-checked, but the in-app ledger does not yet provide a pinpoint citation.", year)
+        elif source_claims:
+            add("Page-level evidence auditability", "PASS", "Source claims include a page reference or source-specific excerpt.", year)
+        else:
+            add("Page-level evidence auditability", "NOT TESTABLE", "No source-backed field claims are available for this year.", year)
 
     price = overview.get("Price")
     eps = overview.get("EPS")
