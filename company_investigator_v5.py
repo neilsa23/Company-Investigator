@@ -1003,12 +1003,23 @@ def financial_forensics(income, balance, cash, metrics):
                 out.append((str(year)[:10], value))
         return out
 
-    def latest_and_oldest(rows, key, n=5):
-        vals=series(rows, key)
+    def latest_and_oldest(rows, key, n=6):
+        # Provider APIs and primary-document extraction do not guarantee the same
+        # ordering. Sort chronologically before selecting endpoints, then use the
+        # actual elapsed calendar years rather than assuming every year is present.
+        vals = sorted(series(rows, key), key=lambda item: item[0])
         if len(vals) < 2:
             return None, None, None
-        use=vals[:n]
-        return use[0][1], use[-1][1], len(use)-1
+        use = vals[-n:]
+        oldest_date, oldest_value = use[0]
+        latest_date, latest_value = use[-1]
+        try:
+            elapsed_years = int(latest_date[:4]) - int(oldest_date[:4])
+        except (ValueError, TypeError):
+            elapsed_years = len(use) - 1
+        if elapsed_years <= 0:
+            elapsed_years = len(use) - 1
+        return latest_value, oldest_value, elapsed_years
 
     rev_latest, rev_old, rev_years = latest_and_oldest(annual_income, "totalRevenue", 6)
     ni_latest, ni_old, ni_years = latest_and_oldest(annual_income, "netIncome", 6)
@@ -1033,9 +1044,10 @@ def financial_forensics(income, balance, cash, metrics):
     old_margin = op_old / rev_old if op_old is not None and rev_old else None
     margin_change = latest_margin - old_margin if latest_margin is not None and old_margin is not None else None
 
+    # Do not silently assume capex is zero when the source field is missing.
     fcf_latest = None
-    if ocf_latest is not None:
-        fcf_latest = ocf_latest - abs(capex_latest or 0)
+    if ocf_latest is not None and capex_latest is not None:
+        fcf_latest = ocf_latest - abs(capex_latest)
     fcf_conversion = fcf_latest / ni_latest if fcf_latest is not None and ni_latest and ni_latest > 0 else None
     ocf_conversion = ocf_latest / ni_latest if ocf_latest is not None and ni_latest and ni_latest > 0 else None
 
@@ -1043,17 +1055,27 @@ def financial_forensics(income, balance, cash, metrics):
     equity_latest = None
     assets_latest = None
     liabilities_latest = None
-    if annual_balance:
-        equity_latest = safe_num(annual_balance[0].get("totalShareholderEquity"))
-        assets_latest = safe_num(annual_balance[0].get("totalAssets"))
-        liabilities_latest = safe_num(annual_balance[0].get("totalLiabilities"))
-    tax_expense = safe_num(annual_income[0].get("incomeTaxExpense")) if annual_income else None
-    pretax = safe_num(annual_income[0].get("incomeBeforeTax")) if annual_income else None
-    tax_rate = tax_expense / pretax if tax_expense is not None and pretax and pretax > 0 else 0.25
-    nopat = op_latest * (1 - clamp(tax_rate, 0, 0.40)) if op_latest is not None else None
-    latest_debt = debt_latest or 0
-    invested_capital = (equity_latest or 0) + latest_debt - (cash_latest or 0)
-    roic = nopat / invested_capital if nopat is not None and invested_capital > 0 else None
+    def latest_record(rows):
+        return max(rows, key=lambda r: str(r.get("fiscalDateEnding") or r.get("year") or r.get("period") or "")) if rows else {}
+
+    latest_balance_record = latest_record(annual_balance)
+    latest_income_record = latest_record(annual_income)
+    equity_latest = safe_num(latest_balance_record.get("totalShareholderEquity"))
+    assets_latest = safe_num(latest_balance_record.get("totalAssets"))
+    liabilities_latest = safe_num(latest_balance_record.get("totalLiabilities"))
+    tax_expense = safe_num(latest_income_record.get("incomeTaxExpense"))
+    pretax = safe_num(latest_income_record.get("incomeBeforeTax"))
+    # If the tax rate cannot be calculated from reported values, don't quietly
+    # insert a generic 25% assumption into a metric presented as forensic evidence.
+    tax_rate = tax_expense / pretax if tax_expense is not None and pretax and pretax > 0 else None
+    nopat = op_latest * (1 - clamp(tax_rate, 0, 0.40)) if op_latest is not None and tax_rate is not None else None
+    # Require all invested-capital components to be known; missing debt/cash/equity
+    # must not be converted into zero for a purported ROIC measure.
+    if equity_latest is not None and debt_latest is not None and cash_latest is not None:
+        invested_capital = equity_latest + debt_latest - cash_latest
+    else:
+        invested_capital = None
+    roic = nopat / invested_capital if nopat is not None and invested_capital is not None and invested_capital > 0 else None
 
     growth_quality = 50.0
     quality_points=[]
@@ -1191,20 +1213,28 @@ def analyse(data: Dict[str, Any], api_key: Optional[str] = None) -> CompanyRepor
     # Historical growth if annual reports are available.
     revenue_cagr = None
     eps_cagr = None
-    annual = income.get("annualReports", [])
-    if len(annual) >= 4:
-        latest = annual[0]
-        older = annual[min(3, len(annual) - 1)]
-        revenue_cagr = cagr(
-            safe_num(latest.get("totalRevenue")),
-            safe_num(older.get("totalRevenue")),
-            min(3, len(annual) - 1),
-        )
-        eps_cagr = cagr(
-            safe_num(older.get("reportedEPS")),
-            safe_num(latest.get("reportedEPS")),
-            min(3, len(annual) - 1),
-        )
+    annual = income.get("annualReports", []) or []
+    annual = sorted(annual, key=lambda r: str(r.get("fiscalDateEnding") or r.get("year") or ""))
+    if len(annual) >= 2:
+        # Use chronological endpoints. Annual-report providers commonly return newest
+        # first, while the primary-document loader returns oldest first.
+        latest = annual[-1]
+        older = annual[0]
+        try:
+            elapsed_years = int(str(latest.get("fiscalDateEnding") or latest.get("year"))[:4]) - int(str(older.get("fiscalDateEnding") or older.get("year"))[:4])
+        except (TypeError, ValueError):
+            elapsed_years = len(annual) - 1
+        if elapsed_years > 0:
+            revenue_cagr = cagr(
+                safe_num(older.get("totalRevenue")),
+                safe_num(latest.get("totalRevenue")),
+                elapsed_years,
+            )
+            eps_cagr = cagr(
+                safe_num(older.get("reportedEPS")),
+                safe_num(latest.get("reportedEPS")),
+                elapsed_years,
+            )
 
     growth = score_growth(revenue_cagr, eps_cagr)
     profitability = statistics.mean([
@@ -3603,12 +3633,12 @@ PRIMARY_UK_SOURCES = {
         # routes as a deterministic fallback so discovery does not depend on HTML
         # parsing, JavaScript, search engines, or Yahoo/Alpha Vantage.
         "document_routes": [
-            ("https://investors.raspberrypi.com/reports/48/document", "Interim results 2026"),
-            ("https://investors.raspberrypi.com/reports/44/document", "Annual Report 2025"),
-            ("https://investors.raspberrypi.com/reports/11/document", "Final results 2025"),
-            ("https://investors.raspberrypi.com/reports/10/document", "Interim results 2025"),
-            ("https://investors.raspberrypi.com/reports/3/document", "Interim results 2024"),
-            ("https://investors.raspberrypi.com/reports/36/document", "Annual Report 2024"),
+            ("https://investors-assets.raspberrypi.com/reports/48/document", "Interim results 2026"),
+            ("https://investors-assets.raspberrypi.com/reports/44/document", "Annual Report 2025"),
+            ("https://investors-assets.raspberrypi.com/reports/11/document", "Final results 2025"),
+            ("https://investors-assets.raspberrypi.com/reports/10/document", "Interim results 2025"),
+            ("https://investors-assets.raspberrypi.com/reports/3/document", "Interim results 2024"),
+            ("https://investors-assets.raspberrypi.com/reports/36/document", "Annual Report 2024"),
             ("https://investors.raspberrypi.com/ipo/documents/3", "Historical Financial Information FY2021-FY2023"),
         ],
     },
@@ -3616,12 +3646,25 @@ PRIMARY_UK_SOURCES = {
 
 
 def _v42_get(url, timeout=30, headers=None):
-    h = {"User-Agent": "Company-Investigator/4.2 research-tool", "Accept": "text/html,application/pdf,application/xhtml+xml,*/*;q=0.8"}
+    h = {"User-Agent": "Company-Investigator/5.10 research-tool (public-company research)", "Accept": "text/html,application/pdf,application/xhtml+xml,*/*;q=0.8", "Connection": "close"}
     if headers:
         h.update(headers)
-    r = requests.get(url, headers=h, timeout=timeout)
-    r.raise_for_status()
-    return r
+    # Official investor-relations document endpoints sometimes redirect to signed
+    # object-storage URLs. Use a bounded retry for transient resets/timeouts rather
+    # than failing immediately; the retry count is intentionally small for app speed.
+    last_error = None
+    for attempt in range(2):
+        try:
+            r = requests.get(url, headers=h, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.7)
+    if last_error is not None:
+        raise last_error
+    raise requests.RequestException(f"Could not retrieve {url}")
 
 
 def _v42_search_web(query, max_results=12):
@@ -4281,7 +4324,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     docs=sorted(documents[:4],key=lambda d:_v5_doc_priority(d.get("title")),reverse=True)
     for d in docs:
         try:
-            r=_v42_get(d["url"],timeout=12)
+            r=_v42_get(d["url"],timeout=(4, 16))
             ctype=(r.headers.get("content-type") or "").lower()
             if "pdf" not in ctype and not d["url"].lower().endswith(".pdf") and not r.content.startswith(b"%PDF"):
                 continue
@@ -4439,7 +4482,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.9 source-audit honesty, lease-debt separation, EPS formatting and RPI cash-capex correction","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.10 chronological CAGR, bounded document retries, and conservative forensic metrics","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):

@@ -41,7 +41,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.9 • Source-audit honesty, debt/lease separation + compact figures")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.10 • Chronological CAGR, retrieval retries + conservative metrics")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
