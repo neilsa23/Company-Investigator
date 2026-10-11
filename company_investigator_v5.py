@@ -3814,13 +3814,11 @@ def _v42_document_discovery(symbol, company):
 
 
 def _v42_pdf_text(content):
-    """Extract text from the whole PDF for source validation.
+    """Extract PDF text, falling back to OCR for image-only PDFs.
 
-    Annual reports can put the primary financial statements well beyond page 80.
-    The old validation helper only inspected the first 80 pages and could reject
-    a genuine, full Companies House accounts PDF before the table-aware extractor
-    got a chance to inspect the complete document. Limit to 200 pages as a guard
-    against pathological files, and use pdfplumber as a secondary extraction path.
+    Native extraction is tried first. If it returns little/no text, PyMuPDF OCR
+    uses the system Tesseract installation (provided by Streamlit packages.txt).
+    OCR is deliberately bounded to 150 pages to limit CPU use on large documents.
     """
     import io
     chunks = []
@@ -3869,6 +3867,33 @@ def _v42_pdf_text(content):
             text = fitz_text
     except Exception:
         pass
+    # OCR fallback for image-only/scanned PDFs. PyMuPDF's OCR support requires
+    # the Tesseract executable and English tessdata; packages.txt installs them
+    # on Streamlit Community Cloud. Never claim OCR succeeded unless text exists.
+    if len(text.strip()) < 200:
+        try:
+            import fitz
+            doc = fitz.open(stream=content, filetype="pdf")
+            ocr_chunks = []
+            for page in doc[:150]:
+                try:
+                    native = page.get_text("text") or ""
+                    if len(native.strip()) >= 40:
+                        ocr_chunks.append(native)
+                    else:
+                        textpage = page.get_textpage_ocr(language="eng", dpi=150, full=True)
+                        ocr_chunks.append(page.get_text("text", textpage=textpage) or "")
+                except Exception:
+                    # Continue to other pages; an OCR failure on one page must not
+                    # discard text recovered from the rest of the report.
+                    continue
+            ocr_text = "\n".join(ocr_chunks)
+            if len(ocr_text.strip()) > len(text.strip()):
+                text = ocr_text
+        except Exception:
+            # Preserve the native-extraction result; callers surface validation
+            # diagnostics rather than silently treating an unreadable PDF as valid.
+            pass
     return text
 
 
@@ -4678,7 +4703,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.17 three-engine PDF text extraction, Companies House fallback diagnostics, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.18 OCR fallback for image-only PDFs, Companies House fallback diagnostics, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
