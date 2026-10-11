@@ -40,7 +40,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.5 • Validated annual/interim data + valuation safeguards")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.6 • Compact financial figures, corrected year checks + valuation safeguards")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -84,6 +84,64 @@ def score_colour(score):
 
 def money(value):
     return "N/A" if value is None else f"{value:,.2f}"
+
+
+def compact_financial_value(value, field_name=""):
+    """Compact display formatting for statement values; does not change source data."""
+    if value is None:
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if pd.isna(number):
+        return "—"
+    if field_name == "EPS":
+        return f"{number:,.2f}".rstrip("0").rstrip(".")
+    sign = "−" if number < 0 else ""
+    number = abs(number)
+    if field_name == "Shares":
+        suffixes = ((1_000_000_000, "bn"), (1_000_000, "m"), (1_000, "k"))
+    else:
+        suffixes = ((1_000_000_000, "bn"), (1_000_000, "m"), (1_000, "k"))
+    for threshold, suffix in suffixes:
+        if number >= threshold:
+            short = f"{number / threshold:.1f}".rstrip("0").rstrip(".")
+            return f"{sign}{short}{suffix}"
+    if number >= 100:
+        return f"{sign}{number:,.0f}"
+    if number >= 10:
+        return f"{sign}{number:,.1f}".rstrip("0").rstrip(".")
+    return f"{sign}{number:,.2f}".rstrip("0").rstrip(".")
+
+
+_FINANCIAL_AMOUNT_TERMS = (
+    "revenue", "gross profit", "operating profit", "ebitda", "profit before tax",
+    "net income", "net profit", "cash", "debt", "assets", "liabilities", "equity",
+    "market capital", "free cash flow", "operating cash flow", "capital expenditure",
+    "capex", "shares outstanding", "enterprise value", "dividend paid",
+)
+
+def compact_metric_value(metric_name, value):
+    """Compact large financial amounts in the key-metrics table, not prices or ratios."""
+    name = str(metric_name or "").lower()
+    if any(term in name for term in _FINANCIAL_AMOUNT_TERMS):
+        return compact_financial_value(value, "Shares" if "shares" in name else "")
+    return value if value is not None else "—"
+
+def has_valid_price(value):
+    try:
+        number = float(value)
+        return pd.notna(number) and number > 0
+    except (TypeError, ValueError):
+        return False
+
+def report_has_valid_price(report):
+    metrics = getattr(report, "metrics", {}) or {}
+    for key in ("Share price", "Price", "Current price"):
+        if has_valid_price(metrics.get(key)):
+            return True
+    return False
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -173,10 +231,13 @@ with tab1:
             q4.metric("Data confidence", qv["data_confidence"])
             st.markdown("### 💰 Valuation snapshot")
             vc=st.columns(4)
+            price_ok = has_valid_price(qv.get("price"))
             vc[0].metric("Current", money(qv["price"]))
-            vc[1].metric("Bear", money(qv["bear_value"]))
-            vc[2].metric("Base", money(qv["base_value"]))
-            vc[3].metric("Bull", money(qv["bull_value"]))
+            vc[1].metric("Bear", money(qv["bear_value"]) if price_ok else "N/A")
+            vc[2].metric("Base", money(qv["base_value"]) if price_ok else "N/A")
+            vc[3].metric("Bull", money(qv["bull_value"]) if price_ok else "N/A")
+            if not price_ok:
+                st.warning("Market price unavailable: market-relative valuation figures are withheld until a current price can be verified.")
             st.markdown("### 🟢 Why it could work")
             for x in qv["buy_reasons"] or ["No strong automated positive identified."]: st.success(x)
             st.markdown("### 🔴 What could go wrong")
@@ -201,7 +262,16 @@ with tab1:
                 with st.expander("⚠️ Data-quality warnings", expanded=True):
                     for warning in data_warnings:
                         st.write(f"• {warning}")
-            st.dataframe(pd.DataFrame(v5_rows), use_container_width=True, hide_index=True)
+            display_rows = []
+            for source_row in v5_rows:
+                display_row = dict(source_row)
+                for column_name, value in source_row.items():
+                    if column_name != "Year":
+                        display_row[column_name] = compact_financial_value(value, column_name)
+                display_rows.append(display_row)
+            currency = (raw_data.get("overview") or {}).get("ReportingCurrency") or (raw_data.get("overview") or {}).get("Currency") or "source currency not confirmed"
+            st.caption(f"Financial statement values use compact units (k = thousand, m = million, bn = billion). Reporting currency: {currency}. EPS is per share. Original numeric values are retained for calculations; missing values are unknown, not zero.")
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
             fc1, fc2, fc3 = st.columns(3)
             fc1.metric("Years extracted", str(len(v5_rows)))
             fc2.metric("Evidence completeness", f"{v5_evidence_completeness(raw_data):.0f}/100")
@@ -323,7 +393,8 @@ with tab1:
         h2.metric("Opportunity", f"{report.opportunity_score:.0f}/100", report.verdict)
         h3.metric("Risk", f"{report.risk_score:.0f}/100", report.risk_band)
         h4.metric("Data confidence", report.data_confidence)
-        h5.metric("Base value", money(report.valuation.get("base_fair_value")))
+        market_price_ok = report_has_valid_price(report)
+        h5.metric("Base value", money(report.valuation.get("base_fair_value")) if market_price_ok else "N/A")
 
         st.caption(
             "Quality = how good the business is. Opportunity = quality + valuation. "
@@ -385,17 +456,19 @@ with tab1:
         valuation_cols = st.columns(5)
 
         vals = [
-            ("Strong buy", v.get("buy_zone")),
-            ("Attractive", v.get("attractive_price")),
-            ("Base value", v.get("base_fair_value")),
-            ("Expensive", v.get("expensive_price")),
+            ("Strong buy", v.get("buy_zone") if market_price_ok else None),
+            ("Attractive", v.get("attractive_price") if market_price_ok else None),
+            ("Base value", v.get("base_fair_value") if market_price_ok else None),
+            ("Expensive", v.get("expensive_price") if market_price_ok else None),
             ("Current", report.metrics.get("Share price")),
         ]
+        if not market_price_ok:
+            st.warning("Current share price unavailable. Price targets and market-relative valuation are withheld rather than presenting unanchored figures.")
 
         for col, (label, value) in zip(valuation_cols, vals):
             col.metric(label, money(value))
 
-        if v.get("upside_to_base") is not None:
+        if market_price_ok and v.get("upside_to_base") is not None:
             upside = v["upside_to_base"]
             if upside >= 0:
                 st.success(f"Base-case upside: **{upside:.1%}**")
@@ -408,10 +481,10 @@ with tab1:
         ])
         scenario_data["Fair value"] = pd.to_numeric(scenario_data["Fair value"], errors="coerce")
         scenario_data = scenario_data.dropna(subset=["Fair value"])
-        if not scenario_data.empty:
+        if market_price_ok and not scenario_data.empty:
             st.bar_chart(scenario_data, x="Scenario", y="Fair value", width="stretch", height=280)
         else:
-            st.info("Scenario valuation is not available until verified valuation inputs are present.")
+            st.info("Scenario valuation is not available until a current market price and verified valuation inputs are present.")
 
         # Scorecard
         st.markdown("## 📊 Scorecard")
@@ -505,10 +578,7 @@ with tab1:
 
         metric_rows = []
         for k, value in metrics.items():
-            if isinstance(value, (int, float)):
-                metric_rows.append({"Metric": k, "Value": value})
-            else:
-                metric_rows.append({"Metric": k, "Value": value})
+            metric_rows.append({"Metric": k, "Value": compact_metric_value(k, value)})
 
         st.dataframe(
             pd.DataFrame(metric_rows),
