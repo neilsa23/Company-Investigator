@@ -31,6 +31,7 @@ from company_investigator_v5 import (
     v41_live_research_pack,
     v5_financial_summary,
     v5_evidence_completeness,
+    build_financial_integrity_checks,
 )
 
 st.set_page_config(
@@ -40,7 +41,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.6 • Compact financial figures, corrected year checks + valuation safeguards")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.8 • Financial integrity checks, evidence coverage + compact figures")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -97,7 +98,7 @@ def compact_financial_value(value, field_name=""):
     if pd.isna(number):
         return "—"
     if field_name == "EPS":
-        return f"{number:,.2f}".rstrip("0").rstrip(".")
+        return f"{number:,.3f}".rstrip("0").rstrip(".") if abs(number) < 1 else f"{number:,.2f}".rstrip("0").rstrip(".")
     sign = "−" if number < 0 else ""
     number = abs(number)
     if field_name == "Shares":
@@ -289,6 +290,21 @@ with tab1:
                     st.dataframe(pd.DataFrame(ledger), use_container_width=True, hide_index=True)
                 else:
                     st.warning("No page-level financial evidence was extracted.")
+            with st.expander("🧪 Financial integrity checks", expanded=True):
+                integrity_checks = build_financial_integrity_checks(raw_data)
+                if integrity_checks:
+                    checks_df = pd.DataFrame(integrity_checks)
+                    passed = int((checks_df["Status"] == "PASS").sum())
+                    review = int((checks_df["Status"] == "REVIEW").sum())
+                    not_testable = int((checks_df["Status"] == "NOT TESTABLE").sum())
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Passed", passed)
+                    k2.metric("Needs review", review)
+                    k3.metric("Not testable", not_testable)
+                    st.caption("These checks validate arithmetic and data structure, not whether every source figure is correct. NOT TESTABLE means the required inputs are missing; it does not mean the company failed the check.")
+                    st.dataframe(checks_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No financial integrity checks could be run.")
         else:
             st.warning("Primary documents were found, but V5 could not extract a financial statement dataset. Missing fields are not treated as zero.")
 
