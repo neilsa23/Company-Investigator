@@ -41,7 +41,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.12 • Explicit metric formatting + evidence-status safeguards")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.13 • Multi-route evidence retrieval + explicit metric status formatting")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -128,6 +128,16 @@ def compact_metric_value(metric_name, value, valuation_currency=None):
     name = " ".join(str(metric_name or "").strip().lower().replace("_", " ").split())
     if value is None:
         return "—"
+    # Boolean status fields must be rendered as labels, not numeric ratios.
+    if name in {"fx conversion applied", "price available", "evidence verified", "source retrieved"}:
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        if isinstance(value, str) and value.strip().lower() in {"true", "yes", "1"}:
+            return "Yes"
+        if isinstance(value, str) and value.strip().lower() in {"false", "no", "0"}:
+            return "No"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
     try:
         n = float(value)
     except (TypeError, ValueError):
