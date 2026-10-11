@@ -3814,19 +3814,44 @@ def _v42_document_discovery(symbol, company):
 
 
 def _v42_pdf_text(content):
+    """Extract text from the whole PDF for source validation.
+
+    Annual reports can put the primary financial statements well beyond page 80.
+    The old validation helper only inspected the first 80 pages and could reject
+    a genuine, full Companies House accounts PDF before the table-aware extractor
+    got a chance to inspect the complete document. Limit to 200 pages as a guard
+    against pathological files, and use pdfplumber as a secondary extraction path.
+    """
+    import io
+    chunks = []
     try:
         from pypdf import PdfReader
-        import io
         reader = PdfReader(io.BytesIO(content))
-        chunks = []
-        for page in reader.pages[:80]:
+        for page in reader.pages[:200]:
             try:
                 chunks.append(page.extract_text() or "")
             except Exception:
                 pass
-        return "\n".join(chunks)
+        text = "\n".join(chunks)
+        if len(text.strip()) >= 2000:
+            return text
     except Exception:
-        return ""
+        text = ""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            fallback_chunks = []
+            for page in pdf.pages[:200]:
+                try:
+                    fallback_chunks.append(page.extract_text(x_tolerance=1.5, y_tolerance=3) or "")
+                except Exception:
+                    pass
+        fallback_text = "\n".join(fallback_chunks)
+        if len(fallback_text.strip()) > len(text.strip()):
+            return fallback_text
+    except Exception:
+        pass
+    return text
 
 
 def _v42_plain_text(content):
@@ -4622,7 +4647,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.15 Companies House PDF retry diagnostics, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.16 full-document PDF validation, Companies House fallback, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
