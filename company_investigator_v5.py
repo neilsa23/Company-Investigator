@@ -3848,7 +3848,25 @@ def _v42_pdf_text(content):
                     pass
         fallback_text = "\n".join(fallback_chunks)
         if len(fallback_text.strip()) > len(text.strip()):
-            return fallback_text
+            text = fallback_text
+        if len(text.strip()) >= 2000 and any(token in text.lower() for token in ("revenue", "profit", "cash flow", "financial statements", "total assets")):
+            return text
+    except Exception:
+        pass
+    # PyMuPDF is a third independent parser. This helps with PDFs whose text
+    # layer is valid but is not exposed consistently by pypdf/pdfplumber.
+    try:
+        import fitz
+        doc = fitz.open(stream=content, filetype="pdf")
+        fitz_chunks = []
+        for page in doc[:200]:
+            try:
+                fitz_chunks.append(page.get_text("text") or "")
+            except Exception:
+                pass
+        fitz_text = "\n".join(fitz_chunks)
+        if len(fitz_text.strip()) > len(text.strip()):
+            text = fitz_text
     except Exception:
         pass
     return text
@@ -4408,8 +4426,21 @@ def _v5_fetch_pdf_fallback(document):
                     raise requests.RequestException(f"Fallback did not return a PDF: {url} (content-type={ctype or 'unknown'})")
                 text = _v42_pdf_text(content)
                 lowered = text.lower()
-                if len(text.strip()) < 2000 or not any(token in lowered for token in ("revenue", "profit for the year", "cash flows", "financial statements", "total assets")):
-                    raise requests.RequestException(f"Fallback PDF lacked substantial financial-statement text: {url}")
+                statement_tokens = ("revenue", "profit for the year", "cash flows", "financial statements", "total assets", "consolidated income statement", "consolidated statement of profit")
+                matched = [token for token in statement_tokens if token in lowered]
+                if len(text.strip()) < 2000 or not matched:
+                    # Preserve actionable diagnostics without dumping document content.
+                    try:
+                        import io
+                        from pypdf import PdfReader
+                        page_count = len(PdfReader(io.BytesIO(content)).pages)
+                    except Exception:
+                        page_count = "unknown"
+                    sample = " ".join(text.strip().split())[:180] or "<no extractable text>"
+                    raise requests.RequestException(
+                        f"Fallback PDF text validation failed: {url}; bytes={len(content)}; pages={page_count}; "
+                        f"extracted_chars={len(text.strip())}; matched_statement_terms={matched}; sample={sample!r}"
+                    )
                 return response, url
             except Exception as exc:
                 last_error = exc
@@ -4647,7 +4678,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.16 full-document PDF validation, Companies House fallback, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.17 three-engine PDF text extraction, Companies House fallback diagnostics, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
