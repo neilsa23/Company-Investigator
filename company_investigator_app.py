@@ -41,7 +41,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.10 • Chronological CAGR, retrieval retries + conservative metrics")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.12 • Explicit metric formatting + evidence-status safeguards")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -124,21 +124,31 @@ _FINANCIAL_AMOUNT_TERMS = (
 )
 
 def compact_metric_value(metric_name, value, valuation_currency=None):
-    """Format key metrics with compact amounts and readable per-share values."""
-    name = str(metric_name or "").lower()
+    """Format key metrics for display only; preserve numeric calculation inputs."""
+    name = " ".join(str(metric_name or "").strip().lower().replace("_", " ").split())
     if value is None:
         return "—"
-    if name == "eps":
-        try:
-            n = float(value)
-            currency = str(valuation_currency or "").upper()
-            symbol = "£" if currency == "GBP" else ("$" if currency == "USD" else "")
-            return f"{symbol}{n:.3f}/share"
-        except (TypeError, ValueError):
-            return value
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if pd.isna(n):
+        return "—"
+    if name == "eps" or name.startswith("eps ("):
+        currency = str(valuation_currency or "").upper()
+        symbol = "£" if currency == "GBP" else ("$" if currency == "USD" else "")
+        return f"{symbol}{n:.3f}/share"
+    # CAGR, margins and conversion ratios are stored as decimals. Handle exact
+    # CAGR labels explicitly so they can never fall through to generic number formatting.
+    ratio_labels = {"revenue cagr", "eps cagr", "net income cagr", "share count cagr",
+                    "operating margin", "profit margin", "gross margin", "fcf conversion",
+                    "free cash flow conversion", "fcf yield", "dividend yield", "roe", "roa", "roic",
+                    "revenue growth rate", "earnings growth rate"}
+    if name in ratio_labels or any(term in name for term in ("cagr", "margin", "conversion", "yield", "roe", "roa", "roic", "growth rate")):
+        return f"{n:.1%}"
     if any(term in name for term in _FINANCIAL_AMOUNT_TERMS):
-        return compact_financial_value(value, "Shares" if "shares" in name else "")
-    return value
+        return str(compact_financial_value(n, "Shares" if "shares" in name else ""))
+    return f"{n:,.2f}".rstrip("0").rstrip(".")
 
 def has_valid_price(value):
     try:
@@ -601,6 +611,13 @@ with tab1:
             k: v for k, v in report.metrics.items()
             if v is not None and k not in ("Company type",)
         }
+        # Use the same chronological annual series as the forensic headline cards.
+        # This prevents the general market-data metrics from showing a rounded or
+        # differently ordered CAGR beside the forensic result.
+        if forensic.get("revenue_cagr_5y") is not None:
+            metrics["Revenue CAGR"] = forensic["revenue_cagr_5y"]
+        if forensic.get("eps_cagr_5y") is not None:
+            metrics["EPS CAGR"] = forensic["eps_cagr_5y"]
 
         metric_rows = []
         for k, value in metrics.items():
@@ -608,10 +625,13 @@ with tab1:
             if str(k).strip().lower() == "eps":
                 val_currency = str(metrics.get("Valuation currency") or "").upper()
                 display_name = f"EPS ({val_currency}/share)" if val_currency else "EPS (per share; currency unconfirmed)"
-            metric_rows.append({"Metric": display_name, "Value": compact_metric_value(k, value, metrics.get("Valuation currency"))})
+            formatted_value = compact_metric_value(k, value, metrics.get("Valuation currency"))
+            # Force the presentation column to text so Streamlit/Pandas cannot
+            # re-infer decimal ratios as raw numeric values in the rendered table.
+            metric_rows.append({"Metric": str(display_name), "Value": str(formatted_value)})
 
         st.dataframe(
-            pd.DataFrame(metric_rows),
+            pd.DataFrame(metric_rows, dtype=str),
             use_container_width=True,
             hide_index=True,
         )
