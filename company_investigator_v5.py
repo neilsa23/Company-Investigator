@@ -4344,28 +4344,50 @@ def _v5_doc_priority(title):
 
 
 def _v5_fetch_pdf_fallback(document):
-    """Try stable official filing-document URLs when the issuer's PDF CDN is blocked.
+    """Try official filing-document URLs and common public download variants.
 
-    Only a real PDF with substantial extractable text and financial-statement cues is
-    accepted. The response URL is retained as evidence; short-lived signed URLs are
-    never hard-coded. Returns (response, url) or raises the last retrieval/validation error.
+    Companies House document URLs redirect to short-lived signed PDF URLs. Fetch
+    the stable filing URL on every attempt, use a Companies House referer when
+    appropriate, and never store or reuse the expiring signed URL. Only accept a
+    real PDF with substantial financial-statement text. Returns (response, url).
     """
     urls = list(document.get("fallback_pdf_urls") or [])
     last_error = None
-    for url in urls:
-        try:
-            response = _v42_get(url, timeout=(5, 30), headers={"Accept": "application/pdf,*/*;q=0.8"})
-            content = getattr(response, "content", b"") or b""
-            ctype = (getattr(response, "headers", {}) or {}).get("content-type", "").lower()
-            if not (content.startswith(b"%PDF") or "application/pdf" in ctype):
-                raise requests.RequestException(f"Fallback did not return a PDF: {url}")
-            text = _v42_pdf_text(content)
-            lowered = text.lower()
-            if len(text.strip()) < 2000 or not any(token in lowered for token in ("revenue", "profit for the year", "cash flows", "financial statements", "total assets")):
-                raise requests.RequestException(f"Fallback PDF lacked substantial financial-statement text: {url}")
-            return response, url
-        except Exception as exc:
-            last_error = exc
+    tried = set()
+    for original_url in urls:
+        if not original_url:
+            continue
+        variants = [original_url]
+        # Some Companies House document routes vary by download parameter. Keep
+        # variants on the official domain and derive them only from a known route.
+        if "find-and-update.company-information.service.gov.uk" in original_url:
+            base = original_url.split("?", 1)[0]
+            variants.extend([
+                base + "?download=0&format=pdf",
+                base + "?download=1&format=pdf",
+                base + "?format=pdf",
+            ])
+        for url in variants:
+            if url in tried:
+                continue
+            tried.add(url)
+            try:
+                is_ch = "find-and-update.company-information.service.gov.uk" in url
+                headers = {"Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8"}
+                if is_ch:
+                    headers["Referer"] = "https://find-and-update.company-information.service.gov.uk/company/15557387/filing-history"
+                response = _v42_get(url, timeout=(8, 35), headers=headers)
+                content = getattr(response, "content", b"") or b""
+                ctype = (getattr(response, "headers", {}) or {}).get("content-type", "").lower()
+                if not (content.startswith(b"%PDF") or "application/pdf" in ctype):
+                    raise requests.RequestException(f"Fallback did not return a PDF: {url} (content-type={ctype or 'unknown'})")
+                text = _v42_pdf_text(content)
+                lowered = text.lower()
+                if len(text.strip()) < 2000 or not any(token in lowered for token in ("revenue", "profit for the year", "cash flows", "financial statements", "total assets")):
+                    raise requests.RequestException(f"Fallback PDF lacked substantial financial-statement text: {url}")
+                return response, url
+            except Exception as exc:
+                last_error = exc
     if last_error:
         raise last_error
     raise requests.RequestException("No official PDF fallback URLs configured")
@@ -4430,7 +4452,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
                         raise requests.RequestException(f"Primary document failed ({primary_exc}); official PDF fallback failed ({pdf_fallback_error}); all HTML fallbacks failed ({fallback_exc})")
                     source_records.append(SourceRecord("Regulatory announcement HTML fallback", "financial-results announcement", "PARTIAL", fallback_url,
                         f"Retrieved substantial HTML result announcement after primary document and official PDF fallback failed. This is not a full annual/interim report.").__dict__)
-                    warnings.append(f"PDF unavailable for {d.get('title', 'primary report')}; retrieved HTML results announcement at {fallback_url}. Full-report coverage may be incomplete.")
+                    warnings.append(f"PDF unavailable for {d.get('title', 'primary report')}; official PDF fallback failed ({pdf_fallback_error}); retrieved HTML results announcement at {fallback_url}. Full-report coverage may be incomplete.")
                     continue
             ctype=(r.headers.get("content-type") or "").lower()
             if "pdf" not in ctype and not d["url"].lower().endswith(".pdf") and not r.content.startswith(b"%PDF"):
@@ -4600,7 +4622,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.14 official filing-PDF fallback, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.15 Companies House PDF retry diagnostics, FCA announcement fallback, and FX status formatting","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"html_fallbacks_retrieved":sum(1 for rec in source_records if rec.get("name") == "Regulatory announcement HTML fallback"),"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
