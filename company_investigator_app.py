@@ -40,7 +40,7 @@ st.set_page_config(
 )
 
 st.title("📊 Company Investigator")
-st.caption("A structured pre-investment research and valuation tool • Engine v5.3 • Faster cached Financial & Evidence Engine + Investment Committee dossier")
+st.caption("A structured pre-investment research and valuation tool • Engine v5.4 • Faster cached Financial & Evidence Engine + Investment Committee dossier")
 
 def _get_alpha_vantage_key():
     # Streamlit Cloud secrets are exposed through st.secrets, not necessarily
@@ -193,6 +193,14 @@ with tab1:
         raw_data = st.session_state.get("raw_data", {})
         v5_rows = v5_financial_summary(raw_data) if isinstance(raw_data, dict) else []
         if v5_rows:
+            quality_status = raw_data.get("data_quality_status", "UNKNOWN")
+            if quality_status == "REVIEW REQUIRED":
+                st.warning("Data-quality review required: one or more source/extraction warnings were raised. Treat automated valuation, scores and sizing as provisional until the evidence ledger is checked.")
+            data_warnings = raw_data.get("warnings") or []
+            if data_warnings:
+                with st.expander("⚠️ Data-quality warnings", expanded=True):
+                    for warning in data_warnings:
+                        st.write(f"• {warning}")
             st.dataframe(pd.DataFrame(v5_rows), use_container_width=True, hide_index=True)
             fc1, fc2, fc3 = st.columns(3)
             fc1.metric("Years extracted", str(len(v5_rows)))
@@ -449,7 +457,7 @@ with tab1:
             for item in forensic.get("flags", []) or ["No major automated forensic warning identified."]:
                 st.warning(item)
 
-        # Historical trends — V5.3 uses explicit x/y mappings and numeric coercion.
+        # Historical trends — V5.4 uses explicit x/y mappings and numeric coercion.
         # This avoids silent chart failures when a sparse financial dataset contains
         # None/object values. Missing points remain missing; they are never invented.
         st.markdown("## 📈 Financial trends")
@@ -791,4 +799,4 @@ with tab2:
                 )
 
 st.divider()
-st.caption("Company Investigator • Version 5.3 • Faster cached Financial & Evidence Engine + Investment Committee dossier")
+st.caption("Company Investigator • Version 5.4 • Faster cached Financial & Evidence Engine + Investment Committee dossier")
