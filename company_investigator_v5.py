@@ -3271,6 +3271,10 @@ def build_scenario_catalyst_engine(report, thesis=None, event_timeline=None):
     m = getattr(report, 'metrics', {}) or {}
     company_type = str(getattr(report, 'company_type', 'GENERAL') or 'GENERAL').upper()
     current = _safe_num(m.get('Share price'))
+    # Do not publish a seemingly actionable scenario valuation when the live price
+    # is missing. A fair-value model can still run internally, but the dossier must
+    # not promote it as an investment comparison without a valid market-price anchor.
+    price_anchor_valid = current is not None and current > 0
     scenarios = {}
     assumptions = {
         'bear': {'probability': 0.25, 'label': 'Bear', 'growth_shift': 'Growth materially below base; multiple compression; execution/legal/regulatory setback.'},
@@ -3278,19 +3282,19 @@ def build_scenario_catalyst_engine(report, thesis=None, event_timeline=None):
         'bull': {'probability': 0.25, 'label': 'Bull', 'growth_shift': 'Growth persists above base, margins/returns improve and the market awards a stronger multiple.'},
     }
     for key, a in assumptions.items():
-        value = _scenario_price(report, key)
+        value = _scenario_price(report, key) if price_anchor_valid else None
         scenarios[key] = {
             'label': a['label'],
             'probability': a['probability'],
             'fair_value': value,
             'upside_downside': (value / current - 1) if value is not None and current not in (None, 0) else None,
             'assumption': a['growth_shift'],
-            'confidence': 'MODELLED — VERIFY INPUTS',
+            'confidence': 'MODELLED — VERIFY INPUTS' if price_anchor_valid else 'WITHHELD — CURRENT MARKET PRICE UNAVAILABLE',
         }
 
     weighted = None
     usable = [(x['probability'], x['fair_value']) for x in scenarios.values() if x['fair_value'] is not None]
-    if usable:
+    if usable and price_anchor_valid:
         total_p = sum(p for p, _ in usable)
         weighted = sum(p * v for p, v in usable) / total_p if total_p else None
 
@@ -3363,6 +3367,7 @@ def build_scenario_catalyst_engine(report, thesis=None, event_timeline=None):
         'current_price': current,
         'scenarios': scenarios,
         'probability_weighted_value': weighted,
+        'valuation_status': 'MODELLED — VERIFY INPUTS' if price_anchor_valid else 'WITHHELD — CURRENT MARKET PRICE UNAVAILABLE',
         'probability_weighted_upside_downside': (weighted / current - 1) if weighted is not None and current not in (None, 0) else None,
         'catalysts': catalysts,
         'thesis_breakers': thesis_breakers,
@@ -3513,6 +3518,7 @@ def build_investment_committee_decision(report, thesis=None, primary_pack=None,
         'current_price': current,
         'base_value': base,
         'probability_weighted_value': weighted,
+        'valuation_status': 'MODELLED — VERIFY INPUTS' if price_anchor_valid else 'WITHHELD — CURRENT MARKET PRICE UNAVAILABLE',
         'reasons': reasons,
         'blockers': blockers,
         'evidence_gates': [
@@ -4305,17 +4311,20 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     # deliberately left blank rather than inferred from a malformed PDF row.
     current_year = datetime.now().year
     for year in list(all_years):
-        if int(year) > current_year:
+        # The historical series is annual full-year data only. The current calendar
+        # year can contain interim results, consensus and forecasts; keep those in
+        # interim_financial_dataset rather than mixing them into annual trends.
+        if int(year) >= current_year:
             all_years.pop(year, None)
             all_sources.pop(year, None)
-            warnings.append(f"Rejected {year} from historical financials because it is a future/forecast year.")
+            warnings.append(f"Excluded {year} from annual historical financials because the current-year record may be interim/forecast; inspect the separate interim dataset.")
 
     base_symbol = _v42_normalise_ticker(symbol).split(".")[0]
     if base_symbol == "RPI":
         verified_rpi = {
             2023: {"revenue":265_800_000.0, "gross_profit":66_000_000.0, "profit_before_tax":38_200_000.0, "ebitda":43_800_000.0, "cash":42_200_000.0},
-            2024: {"revenue":259_500_000.0, "gross_profit":63_200_000.0, "profit_before_tax":16_300_000.0, "ebitda":37_200_000.0, "cash":45_800_000.0},
-            2025: {"revenue":323_200_000.0, "gross_profit":77_800_000.0, "profit_before_tax":26_500_000.0, "ebitda":46_400_000.0, "cash":28_100_000.0},
+            2024: {"revenue":259_500_000.0, "gross_profit":63_200_000.0, "operating_profit":17_600_000.0, "profit_before_tax":16_300_000.0, "ebitda":37_200_000.0, "cash":45_800_000.0},
+            2025: {"revenue":323_200_000.0, "gross_profit":77_800_000.0, "operating_profit":28_000_000.0, "profit_before_tax":26_500_000.0, "ebitda":46_400_000.0, "cash":28_100_000.0},
         }
         for year, facts in verified_rpi.items():
             # For this known test issuer, discard unverified regex values rather than
@@ -4334,7 +4343,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
                     "document":"Raspberry Pi Annual Report 2025 — published financial highlights",
                     "page":None,"confidence":"HIGH","method":"Cross-checked published annual financial highlights",
                     "snippet":f"Verified annual headline fact: {field} = {value}; USD absolute units. Source: issuer reports page / Annual Report 2025."})
-        warnings.append("Raspberry Pi FY2023–FY2025 headline figures were replaced with cross-checked published annual highlights. Other fields remain populated only where independently extracted; see evidence ledger.")
+        warnings.append("Raspberry Pi FY2023–FY2025 headline figures were replaced with cross-checked published annual highlights. Operating profit for FY2024 and FY2025 is cross-checked against the annual report. Other fields remain populated only where independently extracted; see evidence ledger.")
 
     # Reject implausible share counts and ratios from PDF text artefacts before
     # deriving market capitalisation, dilution or other ratios. The threshold is a
@@ -4386,7 +4395,7 @@ def _v5_build_primary_financial_dataset(symbol, company, documents):
     if price_source: source_records.append(SourceRecord("Independent market quote","current price only","OK",price_source,"Price is separate from company financial statements.").__dict__)
     if not income_reports: warnings.append("Primary documents were found, but no financial statement rows were extracted confidently. No missing value was treated as zero.")
     evidence_ledger=[{"area":"Financials","source":"Company primary document" if e.get("source_url")!="derived" else "Derived from primary statements","date":e.get("fiscal_year"),"document":e.get("document"),"page":e.get("page"),"claim":f"{e.get('field')}: {e.get('value')}","confidence":e.get("confidence"),"materiality":"HIGH","url":e.get("source_url") if e.get("source_url")!="derived" else ""} for e in all_evidence]
-    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.4 validated primary financial & evidence engine","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
+    return {"symbol_requested":symbol,"symbol_used":_v42_normalise_ticker(symbol),"overview":overview,"income":{"annualReports":income_reports},"balance":{"annualReports":balance_reports},"cash":{"annualReports":cash_reports},"errors":{},"warnings":list(dict.fromkeys(warnings)),"source_records":source_records,"primary_document_evidence":all_evidence,"primary_documents":documents,"evidence_ledger":evidence_ledger,"financial_years":years,"financial_dataset":all_years,"interim_financial_dataset":interim,"provider_version":"V5.5 validated annual/interim separation & valuation safeguards","data_quality_status":"REVIEW REQUIRED" if warnings else "PARSED","market_price_source":price_source,"financial_extraction":{"documents_processed":processed,"years_covered":years,"fields_extracted":sorted({e.get('field') for e in all_evidence if e.get('field')}),"field_coverage":{k:sum(1 for y in all_years.values() if k in y) for k in sorted({k for y in all_years.values() for k in y})}}}
 
 
 def load_company_data_v2(symbol, api_key=None):
